@@ -7,7 +7,6 @@ const { Vec3 } = require('vec3');
 const mcDataLoader = require('minecraft-data');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
 
 const bot = mineflayer.createBot({
   host: 'localhost',     // server IP or hostname
@@ -15,332 +14,6 @@ const bot = mineflayer.createBot({
   username: 'Buddy',     // for offline servers; use a unique name
   version: '1.21.1'  
 });
-
-// --- LLM Integration ---
-const OLLAMA_BASE_URL = 'http://localhost:11434';
-const LLM_MODEL = 'llama3.2:3b'; // Lightweight model for low latency
-let conversationHistory = [];
-const MAX_HISTORY = 5; // Keep only last 5 messages for minimal context
-
-// OLLAMA API client
-async function callOllama(prompt, stream = false) {
-  try {
-    // First check if OLLAMA is running
-    await axios.get(`${OLLAMA_BASE_URL}/api/tags`, { timeout: 1000 });
-    
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
-      model: LLM_MODEL,
-      prompt: prompt,
-      stream: stream,
-      options: {
-        temperature: 0.7,
-        top_p: 0.9,
-        max_tokens: 50, // Keep responses short for speed
-        stop: ['\n', 'Player:', 'Bot:']
-      }
-    }, {
-      timeout: 5000 // Increased timeout to 5 seconds
-    });
-    
-    return response.data.response.trim();
-  } catch (error) {
-    if (error.code === 'ECONNREFUSED') {
-      console.log('OLLAMA not running. Please start OLLAMA with: ollama serve');
-    } else if (error.message.includes('timeout')) {
-      console.log('OLLAMA timeout. Model may not be loaded. Try: ollama pull llama3.2:3b');
-    } else {
-      console.log('OLLAMA API Error:', error.message);
-    }
-    return 'ok'; // Fallback response
-  }
-}
-
-// Create minimal context for LLM
-function createMinimalContext(playerMessage, playerName) {
-  const botState = {
-    health: bot.health || 20,
-    food: bot.food || 20,
-    pos: bot.entity ? `${Math.round(bot.entity.position.x)},${Math.round(bot.entity.position.y)},${Math.round(bot.entity.position.z)}` : 'unknown',
-    mode: getCurrentMode()
-  };
-  
-  const lastResponse = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1].response : 'none';
-  
-  // More conversational prompt
-  const prompt = `You are MC Buddy, a helpful Minecraft bot. Be friendly and conversational.
-Available commands: come, follow, fight, gather wood, give, guard, patrol, craft, sleep, eat, pickup, status, inventory
-Only respond with a command if the player is asking for something specific. For greetings or casual chat, just say "ok".
-
-Player: ${playerMessage}
-Your last response: ${lastResponse}
-Bot state: health:${botState.health} food:${botState.food} pos:${botState.pos} mode:${botState.mode}
-
-Response:`;
-
-  return prompt;
-}
-
-// Get current bot mode for context
-function getCurrentMode() {
-  if (patrolState.active) return 'patrol';
-  if (guardState.active) return 'guard';
-  if (roamState.active) return 'roam';
-  if (survivalEnabled) return 'survival';
-  return 'idle';
-}
-
-// Map LLM response to bot commands
-function mapLLMResponseToCommand(response, playerName) {
-  const resp = response.toLowerCase().trim();
-  
-  // Direct command mappings - be more specific
-  const commandMap = {
-    'come here': () => `come to me`,
-    'come to me': () => `come to me`,
-    'come': () => `come to me`,
-    'follow me': () => `follow me`,
-    'follow': () => `follow me`,
-    'fight': () => `fight`,
-    'gather wood': () => `gather wood`,
-    'gather': () => `gather wood`,
-    'wood': () => `gather wood`,
-    'give me': () => `give me`,
-    'give': () => `give me`,
-    'guard here': () => `guard here`,
-    'guard': () => `guard here`,
-    'patrol': () => `patrol`,
-    'craft': () => `craft`,
-    'sleep': () => `sleep`,
-    'eat now': () => `eat now`,
-    'eat': () => `eat now`,
-    'pickup': () => `pickup`,
-    'status': () => `status`,
-    'inventory': () => `inventory`,
-    'inv': () => `inventory`,
-    'ok': () => null, // No action needed
-    'yes': () => null,
-    'sure': () => null,
-    'hello': () => null,
-    'hi': () => null,
-    'thanks': () => null,
-    'thank you': () => null,
-    'no': () => null,
-    'stop': () => `stop`
-  };
-  
-  // Check for exact matches first
-  if (commandMap[resp]) {
-    return commandMap[resp]();
-  }
-  
-  // Check for partial matches - but be more careful
-  for (const [key, action] of Object.entries(commandMap)) {
-    if (resp.includes(key) && key.length > 2) { // Only match if key is longer than 2 chars
-      return action();
-    }
-  }
-  
-  // Default fallback - don't assume follow
-  return null;
-}
-
-// Process chat with LLM
-async function processChatWithLLM(username, message) {
-  try {
-    const prompt = createMinimalContext(message, username);
-    const llmResponse = await callOllama(prompt);
-    
-    // Store in conversation history
-    conversationHistory.push({
-      player: username,
-      message: message,
-      response: llmResponse,
-      timestamp: Date.now()
-    });
-    
-    // Keep only recent history
-    if (conversationHistory.length > MAX_HISTORY) {
-      conversationHistory = conversationHistory.slice(-MAX_HISTORY);
-    }
-    
-    // Map response to command
-    const command = mapLLMResponseToCommand(llmResponse, username);
-    
-    if (command) {
-      console.log(`LLM Response: "${llmResponse}" -> Command: "${command}"`);
-      return command;
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('LLM Processing Error:', error);
-    return null;
-  }
-}
-
-// Execute command directly without going through chat handler
-async function executeCommand(command, username) {
-  const msg = command.toLowerCase().trim();
-  
-  try {
-    // follow me | follow <player>
-    if (msg === 'come to me' || msg === 'come') {
-      const player = bot.players[username] && bot.players[username].entity ? bot.players[username].entity : null;
-      if (!player) { bot.chat("I can't see you right now."); return; }
-      bot.pathfinder.setMovements(defaultMovements);
-      bot.pathfinder.setGoal(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 1));
-      bot.chat('On my way.');
-      return;
-    }
-    
-    // follow me | follow <player>
-    if (msg === 'follow me' || msg.startsWith('follow ')) {
-      const targetName = msg === 'follow me' ? username : msg.split(' ').slice(1).join(' ');
-      const target = Object.values(bot.players).find(p => p.username.toLowerCase() === targetName.toLowerCase());
-      if (!target || !target.entity) {
-        bot.chat(`I can't see ${targetName}.`);
-        return;
-      }
-      const goal = new goals.GoalFollow(target.entity, 2);
-      bot.pathfinder.setMovements(defaultMovements);
-      bot.pathfinder.setGoal(goal, true);
-      bot.chat(`Following ${targetName}.`);
-      return;
-    }
-    
-    // status
-    if (msg === 'status') {
-      const status = [
-        `Survival: ${survivalEnabled ? 'ON' : 'OFF'}`,
-        `Auto-eat: ${autoEatEnabled ? 'ON' : 'OFF'}`,
-        `Roaming: ${roamState.active ? 'ON' : 'OFF'}`,
-        `Guard: ${guardState.active ? 'ON' : 'OFF'}`,
-        `Patrol: ${patrolState.active ? 'ON' : 'OFF'}`,
-        `Health: ${bot.health}/20`,
-        `Food: ${bot.food || 'N/A'}`,
-        `Position: ${Math.round(bot.entity.position.x)}, ${Math.round(bot.entity.position.y)}, ${Math.round(bot.entity.position.z)}`
-      ];
-      bot.chat(`Status: ${status.join(' | ')}`);
-      return;
-    }
-    
-    // gather wood
-    if (msg === 'gather wood' || msg === 'wood' || msg === 'collect wood') {
-      if (!mcData) mcData = mcDataLoader(bot.version);
-      const logIds = [
-        'oak_log','spruce_log','birch_log','jungle_log','acacia_log','dark_oak_log','mangrove_log','cherry_log','pale_oak_log'
-      ].map(name => mcData.blocksByName[name] && mcData.blocksByName[name].id).filter(Boolean);
-
-      const targetBlock = bot.findBlock({
-        matching: (blk) => logIds.includes(blk.type),
-        maxDistance: 64
-      });
-
-      if (!targetBlock) {
-        bot.chat('I cannot find any logs nearby.');
-        return;
-      }
-
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
-      try { bot.pvp.stop(); } catch (_) {}
-
-      (async () => {
-        try {
-          await bot.collectBlock.collect(targetBlock);
-          bot.chat('Collected some wood.');
-        } catch (err) {
-          console.error(err);
-          bot.chat('Failed to collect wood.');
-        }
-      })();
-      return;
-    }
-    
-    // fight
-    if (msg === 'fight') {
-      const hostiles = Object.values(bot.entities).filter(e => {
-        const isMob = e.type === 'mob';
-        if (!isMob) return false;
-        const mobName = e.name || e.displayName || '';
-        return ['zombie','skeleton','spider','creeper','witch','enderman','drowned','husk','stray','pillager'].includes(mobName);
-      });
-      hostiles.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
-      const targetEntity = hostiles[0] || null;
-
-      if (!targetEntity) {
-        bot.chat('No valid target to fight.');
-        return;
-      }
-
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
-      try { bot.collectBlock.cancelTask(); } catch (_) {}
-
-      bot.chat('Engaging target.');
-      bot.pvp.attack(targetEntity);
-      return;
-    }
-    
-    // inventory
-    if (msg === 'inventory' || msg === 'inv') {
-      const items = bot.inventory.items();
-      if (items.length === 0) { bot.chat('Inventory empty.'); return; }
-      const counts = {};
-      for (const it of items) {
-        counts[it.name] = (counts[it.name] || 0) + it.count;
-      }
-      const summary = Object.entries(counts).map(([k,v]) => `${k}:${v}`).slice(0, 15).join(', ');
-      bot.chat(summary.length ? summary : 'Inventory empty.');
-      return;
-    }
-    
-    // eat now
-    if (msg === 'eat now' || msg === 'eat') {
-      (async () => {
-        await autoEat();
-      })();
-      return;
-    }
-    
-    // pickup
-    if (msg === 'pickup') {
-      const drops = Object.values(bot.entities).filter(e => e.name === 'item');
-      if (drops.length === 0) { bot.chat('No drops nearby.'); return; }
-      drops.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
-      const targets = drops.filter(d => bot.entity.position.distanceTo(d.position) <= 12);
-      if (targets.length === 0) { bot.chat('No drops within range.'); return; }
-      (async () => {
-        try {
-          for (const d of targets) {
-            await goNearPosition(d.position, 1.2, 8000);
-            await sleep(250);
-          }
-          bot.chat('Picked up nearby drops.');
-        } catch (e) {
-          console.error(e);
-          bot.chat('Failed to pick up drops.');
-        }
-      })();
-      return;
-    }
-    
-    // stop command
-    if (msg === 'stop' || msg === 'halt' || msg === 'cancel') {
-      try { bot.pvp.stop(); } catch (_) {}
-      try { bot.pathfinder.setGoal(null); } catch (_) {}
-      try { bot.collectBlock.cancelTask(); } catch (_) {}
-      stopPatrol();
-      bot.chat('Stopped current actions.');
-      return;
-    }
-    
-    // Default fallback
-    bot.chat(`I understood: ${command}`);
-    
-  } catch (error) {
-    console.error('Error executing command:', error);
-    bot.chat('Sorry, I had trouble with that command.');
-  }
-}
 
 // Load plugins
 bot.loadPlugin(pathfinder);
@@ -356,8 +29,6 @@ let autoEatEnabled = true;
 let guardState = { active: false, pos: null, radius: 10, interval: null };
 let patrolState = { active: false, names: [], idx: 0, interval: null };
 let roamState = { active: false, interval: null, lastMoveTime: 0, currentTarget: null };
-let actionQueue = [];
-let isExecutingAction = false;
 
 // --- Persistence ---
 const statePath = path.join(__dirname, 'state.json');
@@ -390,16 +61,12 @@ function saveState() {
 
 bot.once('spawn', () => {
   console.log('Bot spawned.');
-  bot.chat('Hello! I am alive and powered by AI!');
+  bot.chat('Hello! I am alive.');
 
   mcData = mcDataLoader(bot.version);
   defaultMovements = new Movements(bot, mcData);
   bot.pathfinder.setMovements(defaultMovements);
   loadState();
-  
-  // Start proactive monitoring
-  startProactiveMonitoring();
-  console.log('LLM-powered proactive monitoring started.');
 });
 
 // Helper: resolve requested item term to one or more mcData item ids
@@ -438,78 +105,83 @@ function resolveItemIdsFromTerm(term) {
   return candidates;
 }
 
-bot.on('chat', async (username, message) => {
+bot.on('chat', (username, message) => {
   if (username === bot.username) return;
-  
-  // Handle queue management commands first
   const msg = message.toLowerCase().trim();
-  if (msg === 'queue' || msg === 'show queue') {
-    bot.chat(getQueueStatus());
-    return;
-  }
-  if (msg === 'clear queue' || msg === 'clear') {
-    clearQueue();
-    return;
-  }
-  if (msg === 'stop queue' || msg === 'pause queue') {
-    isExecutingAction = false;
-    bot.chat('Action queue paused.');
-    return;
-  }
-  if (msg === 'resume queue' || msg === 'continue queue') {
-    if (actionQueue.length > 0) {
-      processActionQueue();
-    } else {
-      bot.chat('No actions in queue to resume.');
-    }
-    return;
-  }
-  
-  // Process with LLM first (only if OLLAMA is available)
-  if (ollamaAvailable) {
-    const llmCommand = await processChatWithLLM(username, message);
-    
-    // If LLM provided a command, add it to queue
-    if (llmCommand) {
-      console.log(`LLM command queued: ${llmCommand}`);
-      addToQueue(llmCommand, username);
-      return;
-    } else {
-      // LLM didn't provide a command, give a friendly response
-      const friendlyResponses = [
-        "Hello! How can I help you?",
-        "Hi there! What would you like me to do?",
-        "Hey! I'm here to help. What do you need?",
-        "Greetings! I'm ready to assist you.",
-        "Hi! I can help with gathering, fighting, following, and more!"
-      ];
-      const randomResponse = friendlyResponses[Math.floor(Math.random() * friendlyResponses.length)];
-      bot.chat(randomResponse);
-      return;
-    }
-  } else {
-    // Simple fallback for common phrases when OLLAMA is not available
-    if (msg.includes('come') || msg.includes('here')) {
-      addToQueue('come to me', username);
-      return;
-    } else if (msg.includes('follow')) {
-      addToQueue('follow me', username);
-      return;
-    } else if (msg.includes('wood') || msg.includes('gather')) {
-      addToQueue('gather wood', username);
-      return;
-    } else if (msg.includes('status') || msg.includes('health')) {
-      addToQueue('status', username);
-      return;
-    }
-  }
-  
-  // Fallback to original command processing for direct commands
-  // Add direct commands to queue instead of executing immediately
-  addToQueue(message, username);
 
-  // All commands are now handled by the queue system
+  // follow me | follow <player>
+  if (msg === 'follow me' || msg.startsWith('follow ')) {
+    const targetName = msg === 'follow me' ? username : msg.split(' ').slice(1).join(' ');
+    const target = Object.values(bot.players).find(p => p.username.toLowerCase() === targetName.toLowerCase());
+    if (!target || !target.entity) {
+      bot.chat(`I can't see ${targetName}.`);
+      return;
+    }
+    const goal = new goals.GoalFollow(target.entity, 2);
+    bot.pathfinder.setMovements(defaultMovements);
+    bot.pathfinder.setGoal(goal, true);
+    bot.chat(`Following ${targetName}.`);
+    return;
+  }
 
+  // survival on/off
+  if (msg === 'survival on' || msg === 'survival off') {
+    const turnOn = msg.endsWith('on');
+    survivalEnabled = turnOn;
+    if (turnOn) {
+      startSurvivalLoop();
+      bot.chat('Survival mode enabled.');
+    } else {
+      stopSurvivalLoop();
+      bot.chat('Survival mode disabled.');
+    }
+    return;
+  }
+
+  // auto eat on/off
+  if (msg === 'auto eat on' || msg === 'auto eat off') {
+    const turnOn = msg.endsWith('on');
+    autoEatEnabled = turnOn;
+    bot.chat(`Auto-eat ${turnOn ? 'enabled' : 'disabled'}.`);
+    return;
+  }
+
+  // eat now
+  if (msg === 'eat' || msg === 'eat now') {
+    (async () => {
+      await autoEat();
+    })();
+    return;
+  }
+
+  // roam on/off
+  if (msg === 'roam on' || msg === 'roam off') {
+    const turnOn = msg.endsWith('on');
+    if (turnOn) {
+      startRoaming();
+      bot.chat('Roaming mode enabled.');
+    } else {
+      stopRoaming();
+      bot.chat('Roaming mode disabled.');
+    }
+    return;
+  }
+
+  // status
+  if (msg === 'status') {
+    const status = [
+      `Survival: ${survivalEnabled ? 'ON' : 'OFF'}`,
+      `Auto-eat: ${autoEatEnabled ? 'ON' : 'OFF'}`,
+      `Roaming: ${roamState.active ? 'ON' : 'OFF'}`,
+      `Guard: ${guardState.active ? 'ON' : 'OFF'}`,
+      `Patrol: ${patrolState.active ? 'ON' : 'OFF'}`,
+      `Health: ${bot.health}/20`,
+      `Food: ${bot.food || 'N/A'}`,
+      `Position: ${Math.round(bot.entity.position.x)}, ${Math.round(bot.entity.position.y)}, ${Math.round(bot.entity.position.z)}`
+    ];
+    bot.chat(`Status: ${status.join(' | ')}`);
+    return;
+  }
 
   // guard here [radius]
   if (msg.startsWith('guard here')) {
@@ -1450,278 +1122,6 @@ function startSurvivalLoop() {
 function stopSurvivalLoop() {
   if (survivalInterval) clearInterval(survivalInterval);
   survivalInterval = null;
-}
-
-// --- Action Queue System ---
-function addToQueue(command, username, priority = false) {
-  const action = {
-    command: command,
-    username: username,
-    timestamp: Date.now(),
-    priority: priority
-  };
-  
-  if (priority) {
-    actionQueue.unshift(action); // Add to front for priority
-    bot.chat(`Priority action queued: ${command}`);
-  } else {
-    actionQueue.push(action); // Add to back for normal queue
-    bot.chat(`Action queued: ${command} (${actionQueue.length} in queue)`);
-  }
-  
-  // Start processing if not already running
-  if (!isExecutingAction) {
-    processActionQueue();
-  }
-}
-
-async function processActionQueue() {
-  if (isExecutingAction || actionQueue.length === 0) return;
-  
-  isExecutingAction = true;
-  
-  while (actionQueue.length > 0) {
-    const action = actionQueue.shift();
-    const { command, username } = action;
-    
-    try {
-      bot.chat(`Executing: ${command}`);
-      await executeCommand(command, username);
-      
-      // Wait a bit between actions to avoid overwhelming the bot
-      await sleep(1000);
-    } catch (error) {
-      console.error('Error executing queued action:', error);
-      bot.chat(`Failed to execute: ${command}`);
-    }
-  }
-  
-  isExecutingAction = false;
-  bot.chat('All queued actions completed.');
-}
-
-function clearQueue() {
-  actionQueue = [];
-  bot.chat('Action queue cleared.');
-}
-
-function getQueueStatus() {
-  if (actionQueue.length === 0) {
-    return 'No actions in queue.';
-  }
-  
-  const queueList = actionQueue.map((action, index) => 
-    `${index + 1}. ${action.command} (by ${action.username})`
-  ).join('\n');
-  
-  return `Queue (${actionQueue.length} actions):\n${queueList}`;
-}
-
-// --- Proactive LLM Behaviors ---
-let proactiveInterval = null;
-let lastProactiveAction = 0;
-const PROACTIVE_COOLDOWN = 30000; // 30 seconds between proactive actions
-let ollamaAvailable = false;
-
-function startProactiveMonitoring() {
-  if (proactiveInterval) return;
-  
-  // Check if OLLAMA is available first
-  checkOllamaAvailability();
-  
-  proactiveInterval = setInterval(async () => {
-    const now = Date.now();
-    if (now - lastProactiveAction < PROACTIVE_COOLDOWN) return;
-    
-    // Only run proactive monitoring if OLLAMA is available
-    if (ollamaAvailable) {
-      const proactiveAction = await checkProactiveOpportunities();
-      if (proactiveAction) {
-        lastProactiveAction = now;
-        console.log(`Proactive action: ${proactiveAction}`);
-      }
-    }
-  }, 15000); // Check every 15 seconds instead of 5
-}
-
-async function checkOllamaAvailability() {
-  try {
-    await axios.get(`${OLLAMA_BASE_URL}/api/tags`, { timeout: 2000 });
-    ollamaAvailable = true;
-    console.log('OLLAMA is available. LLM features enabled.');
-  } catch (error) {
-    ollamaAvailable = false;
-    console.log('OLLAMA not available. Running in fallback mode.');
-  }
-}
-
-function stopProactiveMonitoring() {
-  if (proactiveInterval) clearInterval(proactiveInterval);
-  proactiveInterval = null;
-}
-
-async function checkProactiveOpportunities() {
-  try {
-    const context = createProactiveContext();
-    const prompt = `You are MC Buddy. Analyze the situation and suggest ONE proactive action.
-Available: pickup, auto-eat, craft torches, deposit items, sleep, gather wood
-Only suggest an action if it's really needed. Be conservative.
-Respond with ONLY the action or "none".
-
-Context: ${context}`;
-    
-    const response = await callOllama(prompt);
-    const action = response.toLowerCase().trim();
-    
-    if (action === 'none' || action === 'ok' || action === 'no') return null;
-    
-    // Execute proactive action
-    return await executeProactiveAction(action);
-  } catch (error) {
-    console.error('Proactive monitoring error:', error);
-    return null;
-  }
-}
-
-function createProactiveContext() {
-  const health = bot.health || 20;
-  const food = bot.food || 20;
-  const time = bot.time ? bot.time.timeOfDay : 12000;
-  const isNight = time >= 13000 || time < 6000;
-  const pos = bot.entity ? `${Math.round(bot.entity.position.x)},${Math.round(bot.entity.position.y)},${Math.round(bot.entity.position.z)}` : 'unknown';
-  
-  // Check for nearby items
-  const drops = Object.values(bot.entities).filter(e => e.name === 'item');
-  const nearbyDrops = drops.filter(d => bot.entity.position.distanceTo(d.position) <= 8).length;
-  
-  // Check inventory space
-  const invItems = bot.inventory.items();
-  const invSpace = 36 - invItems.length; // Assuming 36 slot inventory
-  
-  // Check for chest nearby
-  const chest = bot.findBlock({ matching: (b) => b && b.name === 'chest', maxDistance: 16 });
-  
-  return `health:${health} food:${food} night:${isNight} pos:${pos} drops:${nearbyDrops} invSpace:${invSpace} chest:${chest ? 'yes' : 'no'}`;
-}
-
-async function executeProactiveAction(action) {
-  try {
-    switch (action) {
-      case 'pickup':
-        if (Object.values(bot.entities).filter(e => e.name === 'item').length > 0) {
-          await executeCommand('pickup', 'system');
-          return 'Picking up nearby items';
-        }
-        break;
-        
-      case 'auto-eat':
-        if (bot.food < 15) {
-          await executeCommand('eat now', 'system');
-          return 'Eating due to low hunger';
-        }
-        break;
-        
-      case 'craft torches':
-        if (bot.inventory.findInventoryItem(mcData.itemsByName.coal?.id) && 
-            bot.inventory.findInventoryItem(mcData.itemsByName.stick?.id)) {
-          // For now, just gather wood instead of crafting
-          await executeCommand('gather wood', 'system');
-          return 'Gathering resources for crafting';
-        }
-        break;
-        
-      case 'deposit items':
-        const chest = bot.findBlock({ matching: (b) => b && b.name === 'chest', maxDistance: 16 });
-        if (chest && bot.inventory.items().length > 20) {
-          // Use the original deposit logic
-          (async () => {
-            try {
-              await goNearPosition(chest.position, 1.6, 12000);
-              await sleep(200);
-              const chestBlock = await bot.openChest(chest);
-              const inv = bot.inventory.items();
-              for (const it of inv) {
-                await chestBlock.deposit(it.type, null, it.count);
-              }
-              chestBlock.close();
-              bot.chat('Deposited all items.');
-            } catch (e) {
-              console.error(e);
-              bot.chat('Deposit failed.');
-            }
-          })();
-          return 'Depositing items to chest';
-        }
-        break;
-        
-      case 'sleep':
-        const time = bot.time ? bot.time.timeOfDay : 12000;
-        const isNight = time >= 13000 || time < 6000;
-        if (isNight) {
-          // Use the original sleep logic
-          (async () => {
-            try {
-              let bed = bot.findBlock({ matching: (b) => b && b.name.includes('bed'), maxDistance: 16 });
-              if (!bed) {
-                const bedItem = bot.inventory.findInventoryItem(mcData.itemsByName.red_bed.id) || 
-                               bot.inventory.findInventoryItem(mcData.itemsByName.white_bed.id);
-                if (!bedItem) { bot.chat('Need a bed and I don\'t have one.'); return; }
-                
-                const positions = [
-                  bot.entity.position.offset(1, 0, 0),
-                  bot.entity.position.offset(-1, 0, 0),
-                  bot.entity.position.offset(0, 0, 1),
-                  bot.entity.position.offset(0, 0, -1)
-                ];
-                
-                let placed = false;
-                for (const pos of positions) {
-                  const targetBlock = bot.blockAt(pos);
-                  if (targetBlock && targetBlock.name === 'air') {
-                    try {
-                      await bot.placeBlock(bedItem, targetBlock, new Vec3(0, 1, 0));
-                      bed = bot.blockAt(pos);
-                      placed = true;
-                      break;
-                    } catch (e) {
-                      continue;
-                    }
-                  }
-                }
-                
-                if (!placed) {
-                  bot.chat('No suitable place for bed nearby.');
-                  return;
-                }
-              }
-              await goNearPosition(bed.position, 1.6, 8000);
-              await sleep(200);
-              await bot.sleep(bed);
-              bot.chat('Slept until morning.');
-            } catch (e) {
-              console.error(e);
-              bot.chat('Sleep failed.');
-            }
-          })();
-          return 'Sleeping for the night';
-        }
-        break;
-        
-      case 'gather wood':
-        const woodCount = bot.inventory.items().filter(i => i.name.includes('log')).length;
-        const totalItems = bot.inventory.items().length;
-        // Only gather wood if we have very little wood AND inventory space
-        if (woodCount < 3 && totalItems < 30) {
-          await executeCommand('gather wood', 'system');
-          return 'Gathering wood for supplies';
-        }
-        break;
-    }
-  } catch (error) {
-    console.error('Error executing proactive action:', error);
-  }
-  
-  return null;
 }
 
 // --- Guard helpers ---
