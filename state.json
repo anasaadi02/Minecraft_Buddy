@@ -1,0 +1,18 @@
+{
+  "waypoints": {
+    "home": {
+      "x": 264,
+      "y": 63,
+      "z": 94,
+      "dimension": "overworld"
+    },
+    "marks": {
+      "tree": {
+        "x": 135,
+        "y": 68,
+        "z": 137,
+        "dimension": "overworld"
+      }
+    }
+  }
+}
