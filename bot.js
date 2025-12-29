@@ -7,6 +7,7 @@ const mcDataLoader = require('minecraft-data');
 
 // Load utilities and command handler
 const { loadState, saveState } = require('./utils/state');
+const { loadWhitelist } = require('./utils/whitelist');
 const commandHandler = require('./commands');
 
 // Configuration for Aternos or other online servers
@@ -77,6 +78,7 @@ bot.once('spawn', () => {
   defaultMovements = new Movements(bot, mcData);
   bot.pathfinder.setMovements(defaultMovements);
   loadState();
+  loadWhitelist();
     
     // Initialize command handler
     const { handleCommand } = commandHandler(bot, mcData, defaultMovements, goals, states);

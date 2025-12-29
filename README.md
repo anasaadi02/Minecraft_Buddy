@@ -12,6 +12,8 @@
 Minecraft_Buddy/
 ├── bot.js                 # Main bot file (simplified)
 ├── state.json             # Persistent data (waypoints, etc.)
+├── whitelist.json         # Whitelist config (git-ignored)
+├── whitelist.example.json # Example whitelist file
 ├── commands/              # Command modules
 │   ├── index.js          # Command handler
 │   ├── movement.js       # Follow, come, roam commands
@@ -20,16 +22,22 @@ Minecraft_Buddy/
 │   ├── inventory.js      # Inventory, give, toss commands
 │   ├── waypoints.js      # Waypoint and patrol commands
 │   ├── survival.js       # Survival, guard, auto eat commands
-│   └── utility.js        # Chest, craft, smelt, sleep commands
+│   ├── utility.js        # Chest, craft, smelt, sleep commands
+│   └── admin.js          # Whitelist management commands
 └── utils/                 # Utility modules
     ├── helpers.js        # Helper functions
-    └── state.js          # State management
+    ├── state.js          # State management
+    └── whitelist.js      # Whitelist management
 ```
 
 ## Getting Started
 1) Install deps (done earlier): `npm i`
 2) Configure your server in `bot.js` (host, port, username, version)
-3) Run: `node bot.js`
+3) **Setup whitelist** (IMPORTANT):
+   - Copy `whitelist.example.json` to `whitelist.json`
+   - Add your Minecraft username to the `players` array
+   - Whitelist is **enabled by default** for security
+4) Run: `node bot.js`
 
 ## Important: Command Prefix
 All commands must start with the bot's name!
@@ -94,6 +102,18 @@ Example: If the bot's name is "Buddy", use:
 - **craft <item> [count]** — craft items (auto-places crafting table if needed)
 - **smelt <item> [count]** — smelt items (auto-places furnace if needed)
 - **sleep** — sleep at night (auto-places bed if needed)
+
+## Whitelist (Admin Commands)
+**NOTE: Whitelist is ENABLED by default. Configure `whitelist.json` before running the bot!**
+
+- **whitelist** — show whitelist status and players
+- **whitelist on** — enable whitelist (bot only responds to whitelisted players)
+- **whitelist off** — disable whitelist (bot responds to everyone)
+- **whitelist add <player>** — add a player to the whitelist
+- **whitelist remove <player>** — remove a player from the whitelist
+- **whitelist list** — list all whitelisted players
+
+The whitelist is stored in `whitelist.json` (git-ignored for security).
 
 ## Notes
 - Item/category resolution: supports exact ids (e.g., oak_log), categories like wood (any *_log or *_planks), food (common foods), and partial matches.

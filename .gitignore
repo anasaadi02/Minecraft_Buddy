@@ -66,4 +66,5 @@ README_old.md
 # waypoints_backup.json
 state.json
 *.state.json
+whitelist.json
 

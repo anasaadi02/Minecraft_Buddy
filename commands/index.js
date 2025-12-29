@@ -1,5 +1,7 @@
 // Command handler - loads and manages all command modules
 
+const { isWhitelisted } = require('../utils/whitelist');
+
 module.exports = function(bot, mcData, defaultMovements, goals, states) {
   const commands = {};
   
@@ -11,6 +13,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
   const waypointCommands = require('./waypoints')(bot, mcData, defaultMovements, goals, states.patrolState);
   const survivalModule = require('./survival')(bot, mcData, defaultMovements, goals, states.survivalEnabled, states.survivalInterval, states.autoEatEnabled, states.guardState);
   const utilityCommands = require('./utility')(bot, mcData, defaultMovements, goals);
+  const adminCommands = require('./admin')(bot, mcData, defaultMovements, goals);
   
   // Merge all commands into one object
   Object.assign(commands,
@@ -20,7 +23,8 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     inventoryCommands,
     waypointCommands,
     survivalModule,
-    utilityCommands
+    utilityCommands,
+    adminCommands
   );
   
   // Command handler function
@@ -31,6 +35,12 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     const botNameLower = bot.username.toLowerCase();
     if (!msg.startsWith(botNameLower + ' ') && msg !== botNameLower) {
       return; // Ignore messages that don't start with bot's name
+    }
+    
+    // Check whitelist (if enabled)
+    if (!isWhitelisted(username)) {
+      // Silently ignore commands from non-whitelisted players
+      return;
     }
     
     // Extract command after bot's name
