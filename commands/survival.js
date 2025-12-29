@@ -1,20 +1,29 @@
 // Survival commands: survival on/off, guard, auto eat, eat, status, stop
 
-module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled, survivalInterval, autoEatEnabled, guardState) {
+module.exports = function(bot, mcData, defaultMovements, goals, states) {
   
-  const state = {
-    survivalEnabled,
-    survivalInterval,
-    autoEatEnabled,
-    noFoodWarned: false,  // Track if we've already warned about no food
-    hasEquippedWeapon: false,  // Track if we equipped a weapon for combat
-    combatRange: 16  // Only engage hostiles within this range
-  };
+  // Use the shared states object instead of creating a local copy
+  const state = states;
+  
+  // Add survival-specific properties if they don't exist
+  if (state.noFoodWarned === undefined) state.noFoodWarned = false;
+  if (state.hasEquippedWeapon === undefined) state.hasEquippedWeapon = false;
+  if (state.combatRange === undefined) state.combatRange = 16;
+  if (state.isEating === undefined) state.isEating = false;
+  if (state.autoEatInterval === undefined) state.autoEatInterval = null;
+  
+  // Start auto-eat loop if enabled (works independently of survival mode)
+  if (state.autoEatEnabled && !state.autoEatInterval) {
+    startAutoEatLoop();
+  }
   
   return {
     'survival on': () => {
       state.survivalEnabled = true;
+      console.log('[SURVIVAL] Enabling survival mode...');
+      console.log('[SURVIVAL] State before:', { survivalEnabled: state.survivalEnabled, hasInterval: !!state.survivalInterval });
       startSurvivalLoop();
+      console.log('[SURVIVAL] State after:', { survivalEnabled: state.survivalEnabled, hasInterval: !!state.survivalInterval });
       bot.chat('Survival mode enabled.');
     },
     
@@ -26,11 +35,13 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
     
     'auto eat on': () => {
       state.autoEatEnabled = true;
+      startAutoEatLoop();
       bot.chat('Auto-eat enabled.');
     },
     
     'auto eat off': () => {
       state.autoEatEnabled = false;
+      stopAutoEatLoop();
       bot.chat('Auto-eat disabled.');
     },
     
@@ -49,12 +60,12 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
       if (!Number.isNaN(maybe) && maybe > 1 && maybe <= 64) radius = maybe;
 
       const me = bot.entity.position;
-      guardState.pos = me.clone();
-      guardState.radius = radius;
-      guardState.active = true;
+      state.guardState.pos = me.clone();
+      state.guardState.radius = radius;
+      state.guardState.active = true;
       startGuardLoop();
       bot.pathfinder.setMovements(defaultMovements);
-      bot.pathfinder.setGoal(new goals.GoalNear(guardState.pos.x, guardState.pos.y, guardState.pos.z, 1));
+      bot.pathfinder.setGoal(new goals.GoalNear(state.guardState.pos.x, state.guardState.pos.y, state.guardState.pos.z, 1));
       bot.chat(`Guarding this spot (r=${radius}).`);
     },
     
@@ -180,7 +191,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
       bot.chat(`Weapon: ${weapon} | Food items: ${foodCount}`);
       bot.chat(`Survival: ${state.survivalEnabled ? 'ON' : 'OFF'} | Auto-eat: ${state.autoEatEnabled ? 'ON' : 'OFF'}`);
       bot.chat(`Combat range: ${state.combatRange}m | Threats: ${nearbyThreats.length}`);
-      bot.chat(`Guard: ${guardState.active ? `ON (r=${guardState.radius}m)` : 'OFF'}`);
+      bot.chat(`Guard: ${state.guardState.active ? `ON (r=${state.guardState.radius}m)` : 'OFF'}`);
       bot.chat(`Roaming: ${bot.roamState?.active ? 'ON' : 'OFF'} | Patrol: ${bot.patrolState?.active ? 'ON' : 'OFF'}`);
       bot.chat(`Position: X=${Math.round(bot.entity.position.x)}, Y=${Math.round(bot.entity.position.y)}, Z=${Math.round(bot.entity.position.z)}`);
       
@@ -195,7 +206,35 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
     
     'stop': () => handleStop(),
     'halt': () => handleStop(),
-    'cancel': () => handleStop()
+    'cancel': () => handleStop(),
+    
+    'debug survival': () => {
+      console.log('[SURVIVAL DEBUG]');
+      console.log('  survivalEnabled:', state.survivalEnabled);
+      console.log('  survivalInterval:', !!state.survivalInterval);
+      console.log('  autoEatEnabled:', state.autoEatEnabled);
+      console.log('  autoEatInterval:', !!state.autoEatInterval);
+      console.log('  combatRange:', state.combatRange);
+      console.log('  isEating:', state.isEating);
+      console.log('  hasEquippedWeapon:', state.hasEquippedWeapon);
+      console.log('  food:', bot.food, '/ 20');
+      console.log('  saturation:', bot.foodSaturation?.toFixed(1));
+      
+      const position = bot.entity.position;
+      const hostiles = Object.values(bot.entities)
+        .filter(isHostileEntity)
+        .map(e => ({
+          name: e.name,
+          distance: Math.round(position.distanceTo(e.position))
+        }));
+      
+      console.log('  Hostile mobs detected:', hostiles.length);
+      if (hostiles.length > 0) {
+        console.log('  Hostiles:', hostiles);
+      }
+      
+      bot.chat('Debug info logged to console.');
+    }
   };
   
   function handleStop() {
@@ -254,58 +293,82 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
   }
   
   async function autoEat() {
-    if (!state.autoEatEnabled) return;
+    if (!state.autoEatEnabled) {
+      console.log('[AUTO-EAT] Disabled');
+      return;
+    }
+    if (state.isEating) {
+      console.log('[AUTO-EAT] Already eating');
+      return;
+    }
     
-    const food = bot.food || 20; // Default to 20 if not available
-    const saturation = bot.foodSaturation || 0;
+    const food = bot.food !== undefined ? bot.food : 20;
+    const saturation = bot.foodSaturation !== undefined ? bot.foodSaturation : 5;
     
-    // Eat if hunger is low or saturation is very low (increased threshold to 18)
-    if (food < 18 || saturation < 3) {
-      const foodItems = bot.inventory.items().filter(item => isFood(item.name));
-      
-      if (foodItems.length > 0) {
-        // Reset the warning flag since we have food now
-        state.noFoodWarned = false;
-        
-        // Smart food selection: don't waste good food on small hunger
-        const hungerNeeded = 20 - food;
-        
-        // Sort by food value (lower to higher for efficiency)
-        foodItems.sort((a, b) => {
-          return getFoodValue(a.name) - getFoodValue(b.name);
-        });
-        
-        // Find the most efficient food (smallest that satisfies hunger need)
-        let chosenFood = foodItems[foodItems.length - 1]; // Default to best if critical
-        
-        if (food > 10) {
-          // Not critical, use efficient food
-          for (const item of foodItems) {
-            const itemFood = getFoodValue(item.name);
-            if (itemFood >= hungerNeeded) {
-              chosenFood = item;
-              break;
-            }
-          }
-        } else {
-          // Critical hunger, use best food available
-          chosenFood = foodItems[foodItems.length - 1];
-        }
-        
-        try {
-          await bot.equip(chosenFood, 'hand');
-          await bot.consume();
-          // Don't spam chat with eating messages
-        } catch (e) {
-          console.log('Failed to eat:', e.message);
-        }
-      } else {
-        // Only warn about no food ONCE, not repeatedly
-        if (!state.noFoodWarned) {
-          bot.chat('Hungry but no food available!');
-          state.noFoodWarned = true;
+    console.log(`[AUTO-EAT] Food: ${food}/20, Saturation: ${saturation.toFixed(1)}`);
+    
+    // Only eat if food is below 16 (lowered threshold to prevent spam)
+    // Don't consider saturation for auto-eat to avoid constant eating
+    if (food >= 16) {
+      console.log('[AUTO-EAT] Food is sufficient');
+      return;
+    }
+    
+    const foodItems = bot.inventory.items().filter(item => isFood(item.name));
+    
+    console.log(`[AUTO-EAT] Found ${foodItems.length} food items: ${foodItems.map(i => `${i.name}(${i.count})`).join(', ')}`);
+    
+    if (foodItems.length === 0) {
+      // Only warn about no food ONCE, not repeatedly
+      if (!state.noFoodWarned) {
+        bot.chat('Hungry but no food available!');
+        state.noFoodWarned = true;
+      }
+      return;
+    }
+    
+    // Reset the warning flag since we have food now
+    state.noFoodWarned = false;
+    
+    // Smart food selection: don't waste good food on small hunger
+    const hungerNeeded = 20 - food;
+    
+    // Sort by food value (lower to higher for efficiency)
+    foodItems.sort((a, b) => {
+      return getFoodValue(a.name) - getFoodValue(b.name);
+    });
+    
+    // Find the most efficient food (smallest that satisfies hunger need)
+    let chosenFood = foodItems[foodItems.length - 1]; // Default to best if critical
+    
+    if (food > 8) {
+      // Not critical, use efficient food
+      for (const item of foodItems) {
+        const itemFood = getFoodValue(item.name);
+        if (itemFood >= hungerNeeded) {
+          chosenFood = item;
+          break;
         }
       }
+    } else {
+      // Critical hunger, use best food available
+      chosenFood = foodItems[foodItems.length - 1];
+    }
+    
+    try {
+      state.isEating = true;
+      console.log(`[AUTO-EAT] Attempting to eat ${chosenFood.name} (+${getFoodValue(chosenFood.name)} food)`);
+      await bot.equip(chosenFood, 'hand');
+      await bot.consume();
+      console.log(`[AUTO-EAT] Successfully ate ${chosenFood.name}`);
+      // Don't spam chat with eating messages
+    } catch (e) {
+      // Only log real errors, not "food is full" or "cancelled" messages
+      if (!e.message.includes('Food is full') && !e.message.includes('cancelled')) {
+        console.log('[AUTO-EAT] Failed to eat:', e.message);
+      }
+    } finally {
+      state.isEating = false;
     }
   }
   
@@ -432,16 +495,24 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
   }
   
   function startSurvivalLoop() {
-    if (state.survivalInterval) return;
+    if (state.survivalInterval) {
+      console.log('[SURVIVAL] Loop already running');
+      return;
+    }
+    
+    console.log('[SURVIVAL] Starting survival loop...');
     state.survivalInterval = setInterval(async () => {
-      if (!state.survivalEnabled) return;
+      if (!state.survivalEnabled) {
+        console.log('[SURVIVAL] Loop running but survival disabled');
+        return;
+      }
+      
       const health = bot.health;
       const position = bot.entity.position;
 
-      // Auto-eat when hungry
-      await autoEat();
+      // Note: Auto-eat runs in its own loop now, not here
 
-      // Check if in immediate danger (lava, cliff)
+      // Check if in immediate danger (lava, cliff) - flee immediately
       if (isInDanger()) {
         try { bot.pvp.stop(); } catch (_) {}
         try { bot.collectBlock.cancelTask(); } catch (_) {}
@@ -452,27 +523,35 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
         return;
       }
 
-      // Flee when low health
-      if (health <= 8) { // 4 hearts
+      // Find all nearby hostiles FIRST
+      const allEntities = Object.values(bot.entities);
+      const hostiles = allEntities
+        .filter(isHostileEntity)
+        .filter(e => position.distanceTo(e.position) <= state.combatRange);
+      
+      console.log(`[SURVIVAL] Checking for threats - Total entities: ${allEntities.length}, Hostiles in range: ${hostiles.length}, Health: ${health}/20`);
+      
+      // If critically low health (2 hearts or less) AND no hostiles very close, flee
+      if (health <= 4 && hostiles.length === 0) {
         try { bot.pvp.stop(); } catch (_) {}
         try { bot.collectBlock.cancelTask(); } catch (_) {}
         const safePos = findSafeFleePosition();
         bot.pathfinder.setMovements(defaultMovements);
         bot.pathfinder.setGoal(new goals.GoalNear(safePos.x, safePos.y, safePos.z, 2));
-        bot.chat('Low health! Retreating!');
+        bot.chat('Critical health! Retreating!');
         return;
       }
-
-      // Engage nearest hostile ONLY within combat range
-      const hostiles = Object.values(bot.entities)
-        .filter(isHostileEntity)
-        .filter(e => position.distanceTo(e.position) <= state.combatRange); // Only nearby hostiles
       
+      // If low health but hostiles are nearby, FIGHT BACK instead of fleeing
+      // This prevents the bot from running away when being attacked
       if (hostiles.length === 0) return;
       
       hostiles.sort((a, b) => position.distanceTo(a.position) - position.distanceTo(b.position));
       const target = hostiles[0];
       if (!target) return;
+      
+      const distance = Math.round(position.distanceTo(target.position));
+      console.log(`[SURVIVAL] Engaging ${target.name} at ${distance} blocks`);
 
       // Equip weapon before combat if not already equipped
       if (!state.hasEquippedWeapon) {
@@ -481,7 +560,9 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
 
       try { bot.collectBlock.cancelTask(); } catch (_) {}
       bot.pvp.attack(target);
-    }, 1000);
+    }, 2000); // Check every 2 seconds instead of 1 to reduce spam
+    
+    console.log('[SURVIVAL] Loop started successfully');
   }
   
   function stopSurvivalLoop() {
@@ -489,22 +570,44 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
     state.survivalInterval = null;
   }
   
+  function startAutoEatLoop() {
+    if (state.autoEatInterval) {
+      console.log('[AUTO-EAT] Loop already running');
+      return;
+    }
+    
+    console.log('[AUTO-EAT] Starting auto-eat loop...');
+    state.autoEatInterval = setInterval(async () => {
+      await autoEat();
+    }, 3000); // Check every 3 seconds
+    
+    console.log('[AUTO-EAT] Loop started successfully');
+  }
+  
+  function stopAutoEatLoop() {
+    if (state.autoEatInterval) {
+      clearInterval(state.autoEatInterval);
+      state.autoEatInterval = null;
+      console.log('[AUTO-EAT] Loop stopped');
+    }
+  }
+  
   function startGuardLoop() {
-    if (guardState.interval) return;
-    guardState.interval = setInterval(async () => {
-      if (!guardState.active || !guardState.pos) return;
+    if (state.guardState.interval) return;
+    state.guardState.interval = setInterval(async () => {
+      if (!state.guardState.active || !state.guardState.pos) return;
 
       // Stay near guard position if drifted
-      const dist = bot.entity.position.distanceTo(guardState.pos);
+      const dist = bot.entity.position.distanceTo(state.guardState.pos);
       if (dist > 2) {
         bot.pathfinder.setMovements(defaultMovements);
-        bot.pathfinder.setGoal(new goals.GoalNear(guardState.pos.x, guardState.pos.y, guardState.pos.z, 1));
+        bot.pathfinder.setGoal(new goals.GoalNear(state.guardState.pos.x, state.guardState.pos.y, state.guardState.pos.z, 1));
       }
 
       // Attack nearest hostile within radius
       const hostiles = Object.values(bot.entities).filter(e => isHostileEntity(e));
       hostiles.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
-      const target = hostiles.find(h => h.position.distanceTo(guardState.pos) <= guardState.radius);
+      const target = hostiles.find(h => h.position.distanceTo(state.guardState.pos) <= state.guardState.radius);
       if (target) {
         // Equip weapon before combat if not already equipped
         if (!state.hasEquippedWeapon) {
@@ -517,11 +620,11 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
   }
   
   function stopGuardLoop() {
-    guardState.active = false;
-    guardState.pos = null;
-    guardState.radius = 10;
-    if (guardState.interval) clearInterval(guardState.interval);
-    guardState.interval = null;
+    state.guardState.active = false;
+    state.guardState.pos = null;
+    state.guardState.radius = 10;
+    if (state.guardState.interval) clearInterval(state.guardState.interval);
+    state.guardState.interval = null;
   }
   
 };

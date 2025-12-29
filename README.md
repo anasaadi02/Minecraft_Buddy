@@ -74,11 +74,15 @@ Example: If the bot's name is "Buddy", use:
 - **give me <item> [count]** — give items to the speaker; accepts categories (wood, food) and partial names
 
 ## Survival Mode
-- **survival on** — enable auto‑defend and flee on low health (≤ 4 hearts)
+- **survival on** — enable auto‑defend (fights back when attacked)
 - **survival off** — disable survival mode
-- **auto eat on** — enable automatic eating when hungry
+- **auto eat on** — enable automatic eating when hungry (works independently)
 - **auto eat off** — disable automatic eating
 - **eat** / **eat now** — force eat food immediately
+- **combat range <number>** — set combat range in blocks (default: 16)
+- **threats** — list nearby hostile mobs
+
+**Note:** Auto-eat works independently of survival mode. You can have auto-eat enabled without enabling survival mode.
 
 ## Guarding
 - **guard here [radius]** — hold position and auto‑defend within radius (default 10)
