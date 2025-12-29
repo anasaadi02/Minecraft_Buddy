@@ -148,21 +148,35 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
             return;
           }
         }
+        // Move near the crafting table first
         await goNearPosition(bot, defaultMovements, goals, table.position, 1.6, 8000);
-        await sleep(200);
+        await sleep(300);
         
-        // Use the crafting util plugin
-        const itemToCraft = { id: itemDef.id, count: reqCount };
-        const plan = bot.planCraft(itemToCraft);
+        // Find recipe using Mineflayer's built-in recipesFor
+        const recipes = bot.recipesFor(itemDef.id, null, 1, table);
         
-        if (!plan || plan.recipesToDo.length === 0) {
-          bot.chat(`No recipe for '${itemName}'.`);
+        if (!recipes || recipes.length === 0) {
+          bot.chat(`No recipe found for '${itemName}'.`);
           return;
         }
         
-        // Execute the crafting plan
-        for (const info of plan.recipesToDo) {
-          await bot.craft(info.recipe, info.recipeApplications, table);
+        const recipe = recipes[0];
+        
+        // Craft the requested count
+        bot.chat(`Crafting ${reqCount} ${itemName}...`);
+        for (let i = 0; i < reqCount; i++) {
+          try {
+            await bot.craft(recipe, 1, table);
+            await sleep(500); // Wait between crafts
+          } catch (err) {
+            console.error(`Crafting ${i + 1}/${reqCount} failed: ${err.message}`);
+            
+            if (err.message.includes('missing ingredient')) {
+              bot.chat(`Missing ingredient. Do I have all materials?`);
+              return;
+            }
+            throw err;
+          }
         }
         
         bot.chat(`Crafted ${reqCount} ${itemName}.`);
