@@ -11,10 +11,10 @@ const commandHandler = require('./commands');
 
 // Configuration for Aternos or other online servers
 const bot = mineflayer.createBot({
-  host: 'localhost',     // Aternos: 'yourserver.aternos.me' or your server IP
-  port: 1111,           // Aternos: Check your server panel for the port (usually 25565 or custom)
-  username: 'Buddy',     // Bot's username (must be unique, not taken by another player)
-  version: '1.21.8',    // Manually patched to support 1.21.10 (protocol 773)
+  host: 'localhost', 
+  port: 1111,
+  username: 'Buddy',
+  version: '1.21.8',
   //auth: 'offline'
 });
 

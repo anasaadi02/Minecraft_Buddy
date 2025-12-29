@@ -35,11 +35,11 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
     },
     
     'eat': async () => {
-      await autoEat();
+      await forceEat();
     },
     
     'eat now': async () => {
-      await autoEat();
+      await forceEat();
     },
     
     'guard here': (username, message) => {
@@ -104,6 +104,27 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
       }
     },
     
+    'check food': () => {
+      // Debug command to check food item properties
+      const items = bot.inventory.items();
+      console.log('\n=== Checking all inventory items for food properties ===');
+      items.forEach(item => {
+        const foodData = mcData.foodsByName && mcData.foodsByName[item.name];
+        console.log(`\n${item.name} (${item.count}x):`);
+        if (foodData) {
+          console.log('  IS FOOD! ✓');
+          console.log('  Food points:', foodData.foodPoints);
+          console.log('  Saturation:', foodData.saturation);
+          console.log('  Saturation ratio:', foodData.saturationRatio);
+        } else {
+          console.log('  Not food');
+        }
+      });
+      
+      const foodItems = items.filter(item => isFood(item.name));
+      bot.chat(`Found ${foodItems.length} food items: ${foodItems.map(i => i.name).join(', ')}`);
+    },
+    
     'status': () => {
       // Get actual health and food values with proper fallbacks
       const health = bot.health !== undefined ? Math.round(bot.health * 10) / 10 : 'N/A';
@@ -146,10 +167,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
       
       // Count inventory items
       const inventory = bot.inventory.items();
-      const foodCount = inventory.filter(item => {
-        const itemData = mcData.itemsByName[item.name];
-        return itemData && itemData.food && itemData.food > 0;
-      }).reduce((sum, item) => sum + item.count, 0);
+      const foodCount = inventory.filter(item => isFood(item.name)).reduce((sum, item) => sum + item.count, 0);
       
       // Count nearby threats
       const position = bot.entity.position;
@@ -188,18 +206,62 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
     bot.chat('Stopped current actions.');
   }
   
+  // Helper function to check if an item is food
+  function isFood(itemName) {
+    // Check if the item exists in the foods data
+    return mcData.foodsByName && mcData.foodsByName[itemName] !== undefined;
+  }
+  
+  // Helper function to get food value
+  function getFoodValue(itemName) {
+    const foodData = mcData.foodsByName && mcData.foodsByName[itemName];
+    return foodData ? foodData.foodPoints || 0 : 0;
+  }
+  
+  // Force eat (for manual "eat now" command) - eats regardless of hunger
+  async function forceEat() {
+    const food = bot.food || 20;
+    const saturation = bot.foodSaturation || 0;
+    
+    bot.chat(`Current hunger: ${food}/20, saturation: ${Math.round(saturation * 10) / 10}`);
+    
+    const foodItems = bot.inventory.items().filter(item => isFood(item.name));
+    
+    console.log('Food items found:', foodItems.map(i => `${i.name}(${i.count})`).join(', '));
+    
+    if (foodItems.length === 0) {
+      bot.chat('I have no food in my inventory!');
+      return;
+    }
+    
+    // Sort by food value (highest first)
+    foodItems.sort((a, b) => {
+      return getFoodValue(b.name) - getFoodValue(a.name);
+    });
+    
+    const chosenFood = foodItems[0];
+    const foodValue = getFoodValue(chosenFood.name);
+    
+    try {
+      await bot.equip(chosenFood, 'hand');
+      bot.chat(`Eating ${chosenFood.name} (+${foodValue} food)...`);
+      await bot.consume();
+      bot.chat(`Ate ${chosenFood.name}!`);
+    } catch (e) {
+      console.error('Failed to eat:', e.message);
+      bot.chat(`Failed to eat: ${e.message}`);
+    }
+  }
+  
   async function autoEat() {
     if (!state.autoEatEnabled) return;
     
     const food = bot.food || 20; // Default to 20 if not available
     const saturation = bot.foodSaturation || 0;
     
-    // Eat if hunger is low or saturation is very low
-    if (food < 15 || saturation < 2) {
-      const foodItems = bot.inventory.items().filter(item => {
-        const itemData = mcData.itemsByName[item.name];
-        return itemData && itemData.food && itemData.food > 0;
-      });
+    // Eat if hunger is low or saturation is very low (increased threshold to 18)
+    if (food < 18 || saturation < 3) {
+      const foodItems = bot.inventory.items().filter(item => isFood(item.name));
       
       if (foodItems.length > 0) {
         // Reset the warning flag since we have food now
@@ -210,9 +272,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
         
         // Sort by food value (lower to higher for efficiency)
         foodItems.sort((a, b) => {
-          const aFood = mcData.itemsByName[a.name].food || 0;
-          const bFood = mcData.itemsByName[b.name].food || 0;
-          return aFood - bFood;
+          return getFoodValue(a.name) - getFoodValue(b.name);
         });
         
         // Find the most efficient food (smallest that satisfies hunger need)
@@ -221,7 +281,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, survivalEnabled,
         if (food > 10) {
           // Not critical, use efficient food
           for (const item of foodItems) {
-            const itemFood = mcData.itemsByName[item.name].food || 0;
+            const itemFood = getFoodValue(item.name);
             if (itemFood >= hungerNeeded) {
               chosenFood = item;
               break;
