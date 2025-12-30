@@ -79,6 +79,11 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       bot.chat('Stopped guarding.');
     },
     
+    'guard off': () => {
+      stopGuardLoop();
+      bot.chat('Guard mode disabled.');
+    },
+    
     'combat range': (username, message) => {
       const parts = message.split(/\s+/);
       const range = parseInt(parts[2], 10);
@@ -208,6 +213,23 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     'halt': () => handleStop(),
     'cancel': () => handleStop(),
     
+    'self defense on': () => {
+      // Self-defense is always on by default, this is just for user feedback
+      bot.chat('Self-defense is always enabled. I will fight back when attacked.');
+    },
+    
+    'self defense off': () => {
+      bot.chat('Self-defense cannot be disabled. I will always defend myself.');
+    },
+    
+    'self defense status': () => {
+      if (bot.selfDefense && bot.selfDefense.isDefending()) {
+        bot.chat('Currently in self-defense mode!');
+      } else {
+        bot.chat('Self-defense: Active. Ready to defend if attacked.');
+      }
+    },
+    
     'debug survival': () => {
       console.log('[SURVIVAL DEBUG]');
       console.log('  survivalEnabled:', state.survivalEnabled);
@@ -242,6 +264,22 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     try { bot.pathfinder.setGoal(null); } catch (_) {}
     try { bot.collectBlock.cancelTask(); } catch (_) {}
     if (bot.stopPatrol) bot.stopPatrol();
+    
+    // Stop wood gathering if active
+    if (state.gatherWoodState && state.gatherWoodState.active) {
+      if (state.gatherWoodState.interval) {
+        clearInterval(state.gatherWoodState.interval);
+        state.gatherWoodState.interval = null;
+      }
+      state.gatherWoodState.active = false;
+    }
+    
+    // Reset self-defense state if active
+    if (bot.selfDefense && bot.selfDefense.isDefending()) {
+      bot.selfDefense.stopDefense();
+      console.log('[STOP] Reset self-defense state');
+    }
+    
     bot.chat('Stopped current actions.');
   }
   
@@ -487,10 +525,15 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
   }
   
   function isHostileEntity(e) {
-    if (!e || e.type !== 'mob') return false;
+    // Check if entity type is 'hostile' or 'mob' (same as self-defense logic)
+    if (!e || (e.type !== 'mob' && e.type !== 'hostile')) return false;
     const name = (e.name || e.displayName || '').toLowerCase();
+    // Common hostile mob names
     return [
-      'zombie','skeleton','spider','creeper','witch','enderman','drowned','husk','stray','pillager','ravager','vindicator','evoker','phantom','slime','magma_cube','wither_skeleton','blaze','ghast','hoglin','piglin_brute','zoglin'
+      'zombie','skeleton','spider','creeper','witch','enderman','drowned','husk','stray',
+      'pillager','ravager','vindicator','evoker','phantom','slime','magma_cube',
+      'wither_skeleton','blaze','ghast','hoglin','piglin_brute','zoglin',
+      'cave_spider','silverfish','vex','guardian','elder_guardian','shulker'
     ].includes(name);
   }
   

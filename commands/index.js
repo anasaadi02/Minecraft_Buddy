@@ -8,7 +8,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
   // Load all command modules
   const movementCommands = require('./movement')(bot, mcData, defaultMovements, goals, states.roamState);
   const combatCommands = require('./combat')(bot, mcData, defaultMovements, goals);
-  const gatheringCommands = require('./gathering')(bot, mcData, defaultMovements, goals);
+  const gatheringCommands = require('./gathering')(bot, mcData, defaultMovements, goals, states);
   const inventoryCommands = require('./inventory')(bot, mcData, defaultMovements, goals);
   const waypointCommands = require('./waypoints')(bot, mcData, defaultMovements, goals, states.patrolState);
   const survivalModule = require('./survival')(bot, mcData, defaultMovements, goals, states);

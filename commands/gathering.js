@@ -4,7 +4,7 @@ const { goNearPosition, sleep } = require('../utils/helpers');
 const { Vec3 } = require('vec3');
 const { Movements } = require('mineflayer-pathfinder');
 
-module.exports = function(bot, mcData, defaultMovements, goals) {
+module.exports = function(bot, mcData, defaultMovements, goals, states) {
   
   // Create custom movements that avoid water for gathering
   const gatheringMovements = new Movements(bot, mcData);
@@ -30,9 +30,11 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
   };
   
   return {
-    'gather wood': async () => await handleGatherWood(),
-    'wood': async () => await handleGatherWood(),
-    'collect wood': async () => await handleGatherWood(),
+    'gather wood': async () => await startGatherWood(),
+    'wood': async () => await startGatherWood(),
+    'collect wood': async () => await startGatherWood(),
+    'stop gather wood': () => stopGatherWood(),
+    'stop wood': () => stopGatherWood(),
     
     'gather ore': async (username, message) => {
       const parts = message.split(/\s+/);
@@ -373,35 +375,82 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
     }
   }
   
-  async function handleGatherWood() {
-    // Check for and equip axe
-    const hasAxe = await equipAxe();
-    if (!hasAxe) return;
+  // Helper function to find logs nearby
+  function findNearbyLogs(logIds, logNameSet, maxRadius = 96) {
+    const logPositions = [];
+    const botPos = bot.entity.position;
+    const searchRadius = 32; // Start with 32 blocks
     
-    const logIds = [
-      'oak_log','spruce_log','birch_log','jungle_log','acacia_log','dark_oak_log','mangrove_log','cherry_log','pale_oak_log'
-    ].map(name => mcData.blocksByName[name] && mcData.blocksByName[name].id).filter(Boolean);
-
-    // Use improved radius search for wood
-    const logPositions = findBlocksInRadius(
-      (blk) => {
-        const block = bot.blockAt(blk);
-        return block && logIds.includes(block.type);
-      },
-      32,
-      96
-    );
+    let currentRadius = searchRadius;
+    while (logPositions.length === 0 && currentRadius <= maxRadius) {
+      // Scan in a cube around the bot
+      const scanRange = Math.ceil(currentRadius);
+      for (let x = -scanRange; x <= scanRange; x++) {
+        for (let y = -scanRange; y <= scanRange; y++) {
+          for (let z = -scanRange; z <= scanRange; z++) {
+            const checkPos = botPos.offset(x, y, z);
+            const dist = botPos.distanceTo(checkPos);
+            if (dist > currentRadius) continue; // Skip if outside current radius
+            
+            const block = bot.blockAt(checkPos);
+            if (!block) continue;
+            
+            let isLog = false;
+            
+            // Check by block ID first (fastest)
+            if (logIds.includes(block.type)) {
+              isLog = true;
+            }
+            // Check by block name
+            else {
+              const blockName = block.name || '';
+              if (logNameSet.has(blockName)) {
+                isLog = true;
+              }
+              // Pattern matching for log/wood variants
+              else if ((blockName.includes('_log') || blockName.includes('_wood')) &&
+                       !blockName.includes('leaves') && !blockName.includes('planks') && 
+                       !blockName.includes('sapling') && !blockName.includes('fence') &&
+                       !blockName.includes('door') && !blockName.includes('trapdoor') &&
+                       !blockName.includes('slab') && !blockName.includes('stairs') &&
+                       !blockName.includes('button') && !blockName.includes('pressure_plate')) {
+                isLog = true;
+              }
+            }
+            
+            if (isLog && !isInWater(checkPos)) {
+              logPositions.push(checkPos);
+            }
+          }
+        }
+      }
+      
+      if (logPositions.length === 0) {
+        currentRadius += 16; // Expand search radius
+      }
+    }
     
-    if (!logPositions || logPositions.length === 0) {
-      bot.chat('I cannot find any logs nearby (searched up to 96 blocks).');
-      return;
+    // Sort by distance (closest first)
+    logPositions.sort((a, b) => {
+      const distA = botPos.distanceTo(a);
+      const distB = botPos.distanceTo(b);
+      return distA - distB;
+    });
+    
+    return logPositions;
+  }
+  
+  async function collectOneLog(logIds, logNameSet) {
+    const logPositions = findNearbyLogs(logIds, logNameSet);
+    
+    if (logPositions.length === 0) {
+      return false; // No logs found
     }
     
     // Get the closest log
     const targetBlock = bot.blockAt(logPositions[0]);
     if (!targetBlock) {
-      bot.chat('I cannot find any logs nearby.');
-      return;
+      return false;
     }
     
     // Check if log is below us and we need to dig
@@ -423,11 +472,100 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
 
     try {
       await bot.collectBlock.collect(targetBlock);
-      bot.chat('Collected some wood.');
+      return true; // Successfully collected
     } catch (err) {
-      console.error(err);
-      bot.chat('Failed to collect wood.');
+      console.error('Failed to collect wood:', err.message);
+      return false;
     }
+  }
+  
+  async function startGatherWood() {
+    // Initialize gatherWoodState if it doesn't exist
+    if (!states.gatherWoodState) {
+      states.gatherWoodState = { active: false, interval: null };
+    }
+    
+    // Check if already gathering
+    if (states.gatherWoodState.active) {
+      bot.chat('I am already gathering wood. Say "stop wood" to stop.');
+      return;
+    }
+    
+    // Check for and equip axe
+    const hasAxe = await equipAxe();
+    if (!hasAxe) return;
+    
+    // Include all log variants: regular logs, stripped logs, and wood blocks
+    const logNames = [
+      'oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
+      'mangrove_log', 'cherry_log', 'pale_oak_log',
+      'stripped_oak_log', 'stripped_spruce_log', 'stripped_birch_log', 'stripped_jungle_log',
+      'stripped_acacia_log', 'stripped_dark_oak_log', 'stripped_mangrove_log', 'stripped_cherry_log',
+      'stripped_pale_oak_log',
+      'oak_wood', 'spruce_wood', 'birch_wood', 'jungle_wood', 'acacia_wood', 'dark_oak_wood',
+      'mangrove_wood', 'cherry_wood', 'pale_oak_wood',
+      'stripped_oak_wood', 'stripped_spruce_wood', 'stripped_birch_wood', 'stripped_jungle_wood',
+      'stripped_acacia_wood', 'stripped_dark_oak_wood', 'stripped_mangrove_wood', 'stripped_cherry_wood',
+      'stripped_pale_oak_wood'
+    ];
+    
+    // Get all valid log block IDs
+    const logIds = logNames
+      .map(name => {
+        const blockDef = mcData.blocksByName[name];
+        return blockDef ? blockDef.id : null;
+      })
+      .filter(Boolean);
+    
+    // Create a set of log names for name-based matching
+    const logNameSet = new Set(logNames);
+    
+    console.log(`[GATHER WOOD] Starting continuous wood gathering. Found ${logIds.length} log types to search for.`);
+    bot.chat('Starting to gather wood. Say "stop wood" to stop.');
+    
+    states.gatherWoodState.active = true;
+    states.gatherWoodState.logIds = logIds;
+    states.gatherWoodState.logNameSet = logNameSet;
+    
+    // Start the gathering loop
+    states.gatherWoodState.interval = setInterval(async () => {
+      if (!states.gatherWoodState.active) {
+        return;
+      }
+      
+      // Check if we still have an axe
+      const inventory = bot.inventory.items();
+      const hasAxe = ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'golden_axe', 'wooden_axe']
+        .some(axeName => inventory.find(item => item.name === axeName));
+      
+      if (!hasAxe) {
+        bot.chat('I lost my axe! Stopping wood gathering.');
+        stopGatherWood();
+        return;
+      }
+      
+      // Try to collect one log
+      const collected = await collectOneLog(logIds, logNameSet);
+      
+      if (!collected) {
+        // No logs found, wait a bit and try again
+        console.log('[GATHER WOOD] No logs found, will retry...');
+      }
+    }, 2000); // Check every 2 seconds
+  }
+  
+  function stopGatherWood() {
+    if (!states.gatherWoodState) {
+      states.gatherWoodState = { active: false, interval: null };
+    }
+    
+    if (states.gatherWoodState.interval) {
+      clearInterval(states.gatherWoodState.interval);
+      states.gatherWoodState.interval = null;
+    }
+    states.gatherWoodState.active = false;
+    try { bot.collectBlock.cancelTask(); } catch (_) {}
+    bot.chat('Stopped gathering wood.');
   }
   
   async function handleGatherOre(oreName, countTarget) {

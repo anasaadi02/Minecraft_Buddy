@@ -120,10 +120,15 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
       if (player && player.entity) targetEntity = player.entity;
     } else {
       const hostiles = Object.values(bot.entities).filter(e => {
-        const isMob = e.type === 'mob';
+        // Check if entity type is 'hostile' or 'mob' (same as self-defense and survival logic)
+        const isMob = e.type === 'mob' || e.type === 'hostile';
         if (!isMob) return false;
         const mobName = e.name || e.displayName || '';
-        return ['zombie','skeleton','spider','creeper','witch','enderman','drowned','husk','stray','pillager'].includes(mobName);
+        // Common hostile mob names
+        return ['zombie','skeleton','spider','creeper','witch','enderman','drowned','husk','stray',
+                'pillager','vindicator','evoker','phantom','blaze','ghast','hoglin','piglin_brute',
+                'wither_skeleton','cave_spider','silverfish','ravager','vex','guardian','elder_guardian',
+                'shulker','zoglin'].includes(mobName);
       });
       hostiles.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
       targetEntity = hostiles[0] || null;

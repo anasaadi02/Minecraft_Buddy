@@ -4,6 +4,7 @@
 - This bot is built with Mineflayer and a few plugins (pathfinder, pvp, collectblock).
 - Works on Minecraft Java. Open your singleplayer world to LAN or use an Aternos server.
 - **NEW**: Modular command structure for easier maintenance and customization!
+- **NEW**: Self-defense system - automatically fights back when attacked!
 - Reference: Mineflayer docs and examples: https://github.com/PrismarineJS/mineflayer
 
 ## Project Structure
@@ -27,12 +28,20 @@ Minecraft_Buddy/
 └── utils/                 # Utility modules
     ├── helpers.js        # Helper functions
     ├── state.js          # State management
-    └── whitelist.js      # Whitelist management
+    ├── whitelist.js      # Whitelist management
+    └── selfDefense.js    # Self-defense system
 ```
 
 ## Getting Started
-1) Install deps (done earlier): `npm i`
-2) Configure your server in `bot.js` (host, port, username, version)
+1) Install deps: `npm i`
+2) **Configure environment variables** (IMPORTANT):
+   - Copy `.env.example` to `.env`
+   - Edit `.env` and set your server details:
+     - `MINECRAFT_HOST` - Server address (e.g., `localhost` or `DEANDEAD.aternos.me`)
+     - `MINECRAFT_PORT` - Server port (e.g., `25565` or `15590`)
+     - `MINECRAFT_USERNAME` - Bot's username
+     - `MINECRAFT_VERSION` - Minecraft version (e.g., `1.21.8`)
+     - `MINECRAFT_AUTH` - Authentication method (`offline`, `mojang`, or `microsoft`)
 3) **Setup whitelist** (IMPORTANT):
    - Copy `whitelist.example.json` to `whitelist.json`
    - Add your Minecraft username to the `players` array
@@ -83,6 +92,20 @@ Example: If the bot's name is "Buddy", use:
 - **threats** — list nearby hostile mobs
 
 **Note:** Auto-eat works independently of survival mode. You can have auto-eat enabled without enabling survival mode.
+
+## Self-Defense (Always Active)
+The bot has an automatic self-defense system that is **always enabled**:
+- **Automatic**: When attacked by a player or mob, the bot automatically fights back
+- **Smart weapon selection**: Equips the best weapon in inventory (sword > axe > trident)
+- **Task resumption**: After defeating the attacker, resumes the previous task
+- **Ignores environmental damage**: Only responds to attacks from players and hostile mobs (ignores fall damage, fire, drowning, etc.)
+- **self defense status** — check if currently defending
+
+The bot will:
+1. Detect when it's attacked by a player or mob
+2. Equip the best weapon available
+3. Fight back until the attacker is defeated or out of range
+4. Resume whatever it was doing before the attack
 
 ## Guarding
 - **guard here [radius]** — hold position and auto‑defend within radius (default 10)
@@ -152,4 +175,130 @@ Example adding a "wave" command to `movement.js`:
 - **Command behavior**: Modify individual command files in `commands/`
 - **Helper functions**: Add utilities in `utils/helpers.js`
 - **State management**: Modify `utils/state.js` for custom persistence
+
+
+- **guard here [radius]** — hold position and auto‑defend within radius (default 10)
+
+- **stop guard** | **guard stop** — stop guarding
+
+
+
+## Waypoints and Patrol
+
+- **set home** — save current position as home (persisted to state.json)
+
+- **go home** — path to home
+
+- **mark <name>** — save a named waypoint (persisted)
+
+- **go <name>** — path to a named waypoint
+
+- **list waypoints** | **waypoints** — list home and all marks
+
+- **delete waypoint <name>** | **del waypoint <name>** | **unmark <name>** — remove a waypoint
+
+- **patrol <wp1> <wp2> [wp3 ...]** — loop through waypoints (names or home)
+
+- **stop patrol** — stop patrolling
+
+
+
+## Chests (Nearest Chest within ~16 blocks)
+
+- **deposit [all|<item>|category]** — deposit items into nearest chest
+
+- **withdraw <item|category> [count]** — withdraw from nearest chest
+
+
+
+## Crafting and Survival
+
+- **craft <item> [count]** — craft items (auto-places crafting table if needed)
+
+- **smelt <item> [count]** — smelt items (auto-places furnace if needed)
+
+- **sleep** — sleep at night (auto-places bed if needed)
+
+
+## Whitelist (Admin Commands)
+**NOTE: Whitelist is ENABLED by default. Configure `whitelist.json` before running the bot!**
+
+- **whitelist** — show whitelist status and players
+- **whitelist on** — enable whitelist (bot only responds to whitelisted players)
+- **whitelist off** — disable whitelist (bot responds to everyone)
+- **whitelist add <player>** — add a player to the whitelist
+- **whitelist remove <player>** — remove a player from the whitelist
+- **whitelist list** — list all whitelisted players
+
+The whitelist is stored in `whitelist.json` (git-ignored for security).
+
+
+## Notes
+
+- Item/category resolution: supports exact ids (e.g., oak_log), categories like wood (any *_log or *_planks), food (common foods), and partial matches.
+
+- Waypoints are stored in `state.json` with x, y, z, and dimension.
+
+- Patrol/Guard/Survival run periodic loops; issuing stop or specific stop commands halts them.
+
+- Ensure versions are compatible; set `version` in `bot.js` to a Mineflayer‑supported game version.
+
+
+
+## Adding New Commands
+
+
+
+To add a new command:
+
+
+
+1. **Choose the appropriate command file** in `commands/` directory
+
+2. **Add your command** to the returned object:
+
+```javascript
+
+'your command': (username, message) => {
+
+  // Your command logic here
+
+  bot.chat('Command executed!');
+
+}
+
+```
+
+3. Commands are automatically loaded by the command handler
+
+
+
+Example adding a "wave" command to `movement.js`:
+
+```javascript
+
+'wave': (username) => {
+
+  bot.chat(`*waves at ${username}*`);
+
+}
+
+```
+
+
+
+## Customization
+
+
+
+- **Bot configuration**: Edit connection settings in `bot.js`
+
+- **Command behavior**: Modify individual command files in `commands/`
+
+- **Helper functions**: Add utilities in `utils/helpers.js`
+
+- **State management**: Modify `utils/state.js` for custom persistence
+
+
+
 

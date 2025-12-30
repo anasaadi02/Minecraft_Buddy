@@ -41,6 +41,52 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
     
     'sleep': () => {
       handleSleep();
+    },
+    
+    'set skin': (username, message) => {
+      const skinName = message.substring('set skin '.length).trim();
+      handleSetSkin(skinName);
+    },
+    
+    'skin': (username, message) => {
+      const skinName = message.substring('skin '.length).trim();
+      if (!skinName || skinName === 'list' || skinName === 'help') {
+        handleSkinHelp();
+        return;
+      }
+      handleSetSkin(skinName);
+    },
+    
+    'skin list': () => {
+      handleSkinHelp();
+    },
+    
+    'skin help': () => {
+      handleSkinHelp();
+    },
+    
+    'skin clear': () => {
+      handleClearSkin();
+    },
+    
+    'clear skin': () => {
+      handleClearSkin();
+    },
+    
+    'exit': () => {
+      handleExit();
+    },
+    
+    'quit': () => {
+      handleExit();
+    },
+    
+    'disconnect': () => {
+      handleExit();
+    },
+    
+    'leave': () => {
+      handleExit();
     }
   };
   
@@ -319,6 +365,86 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
         bot.chat('Sleep failed.');
       }
     })();
+  }
+  
+  function handleSkinHelp() {
+    bot.chat('=== Skin Help ===');
+    bot.chat('Usage: "skin <skinname>" or "set skin <skinname>"');
+    bot.chat('For URLs: "skin url <url>"');
+    bot.chat('');
+    bot.chat('Examples:');
+    bot.chat('• "skin Notch" - Use a player\'s skin');
+    bot.chat('• "skin url https://example.com/skin.png" - Set from URL (classic model)');
+    bot.chat('');
+    bot.chat('Popular skin names to try:');
+    bot.chat('Notch, jeb_, Dinnerbone, Grumm, MHF_Steve, MHF_Alex');
+    bot.chat('');
+    bot.chat('Find more skins at:');
+    bot.chat('• NameMC: https://namemc.com');
+    bot.chat('• Minecraft Skins: https://www.minecraftskins.com');
+    bot.chat('');
+    bot.chat('Tip: Use any Minecraft username as a skin name!');
+  }
+  
+  function handleSetSkin(skinName) {
+    if (!skinName || skinName.trim() === '') {
+      handleSkinHelp();
+      return;
+    }
+    
+    const botUsername = bot.username;
+    
+    // Check if it's a URL command
+    if (skinName.toLowerCase().startsWith('url ')) {
+      const rest = skinName.substring(4).trim();
+      if (!rest) {
+        bot.chat('Please provide a URL. Usage: "skin url <url>"');
+        return;
+      }
+      
+      // Extract URL (ignore any extra parameters, always use classic)
+      const url = rest.split(/\s+/)[0];
+      
+      // Validate URL format
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        bot.chat('Invalid URL format. URL must start with http:// or https://');
+        return;
+      }
+      
+      // Send SkinsRestorer URL command with classic model and bot's username
+      // Format: /skin url "<url>" classic <playername>
+      // Quotes around URL help with URLs that have special characters
+      const command = `/skin url "${url}" slim`;
+      console.log(`[SKIN] Sending command: ${command}`);
+      bot.chat(command);
+      bot.chat(`Setting my skin from URL (classic model)...`);
+      bot.chat(`If the wrong skin appears, try using the skin name instead: "skin set <name>"`);
+    } else {
+      // Send SkinsRestorer set command with bot's username
+      // Format: /skin set <skinname> <playername>
+      bot.chat(`/skin set ${skinName} ${botUsername}`);
+      bot.chat(`Setting my skin to: ${skinName}`);
+    }
+  }
+  
+  function handleClearSkin() {
+    const botUsername = bot.username;
+    // Send SkinsRestorer clear command
+    bot.chat(`/skin clear`);
+    bot.chat('Clearing my skin...');
+  }
+  
+  function handleExit() {
+    bot.chat('Disconnecting from server...');
+    // Stop all active tasks
+    try { bot.pathfinder.setGoal(null); } catch (_) {}
+    try { bot.pvp.stop(); } catch (_) {}
+    try { bot.collectBlock.cancelTask(); } catch (_) {}
+    
+    // Disconnect from server
+    setTimeout(() => {
+      bot.quit('Exit command received');
+    }, 500);
   }
 };
 

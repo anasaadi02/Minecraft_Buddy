@@ -1,3 +1,14 @@
+// Load environment variables
+require('dotenv').config();
+
+// Debug: Check if env vars are loaded
+console.log('[CONFIG] Environment variables loaded:');
+console.log('  MINECRAFT_HOST:', process.env.MINECRAFT_HOST || 'NOT SET');
+console.log('  MINECRAFT_PORT:', process.env.MINECRAFT_PORT || 'NOT SET');
+console.log('  MINECRAFT_USERNAME:', process.env.MINECRAFT_USERNAME || 'NOT SET');
+console.log('  MINECRAFT_VERSION:', process.env.MINECRAFT_VERSION || 'NOT SET');
+console.log('  MINECRAFT_AUTH:', process.env.MINECRAFT_AUTH || 'NOT SET');
+
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const pvp = require('mineflayer-pvp').plugin;
@@ -9,15 +20,20 @@ const mcDataLoader = require('minecraft-data');
 const { loadState, saveState } = require('./utils/state');
 const { loadWhitelist } = require('./utils/whitelist');
 const commandHandler = require('./commands');
+const initSelfDefense = require('./utils/selfDefense');
 
-// Configuration for Aternos or other online servers
-const bot = mineflayer.createBot({
-  host: 'localhost', 
-  port: 1111,
-  username: 'Buddy',
-  version: '1.21.8',
-  //auth: 'offline'
-});
+// Configuration from environment variables
+const botConfig = {
+  host: process.env.MINECRAFT_HOST || 'localhost',
+  port: parseInt(process.env.MINECRAFT_PORT) || 25565,
+  username: process.env.MINECRAFT_USERNAME || 'Bot',
+  version: process.env.MINECRAFT_VERSION || '1.21.8',
+  auth: process.env.MINECRAFT_AUTH || 'offline'
+};
+
+console.log('[CONFIG] Bot configuration:', botConfig);
+
+const bot = mineflayer.createBot(botConfig);
 
 // Load plugins
 bot.loadPlugin(pathfinder);
@@ -36,7 +52,8 @@ const states = {
   autoEatEnabled: true,
   guardState: { active: false, pos: null, radius: 10, interval: null },
   patrolState: { active: false, names: [], idx: 0, interval: null },
-  roamState: { active: false, interval: null, lastMoveTime: 0, currentTarget: null }
+  roamState: { active: false, interval: null, lastMoveTime: 0, currentTarget: null },
+  gatherWoodState: { active: false, interval: null }
 };
 
 // Make states accessible from bot object
@@ -82,6 +99,11 @@ bot.once('spawn', () => {
     
     // Initialize command handler
     const { handleCommand } = commandHandler(bot, mcData, defaultMovements, goals, states);
+    
+    // Initialize self-defense system
+    const selfDefense = initSelfDefense(bot);
+    bot.selfDefense = selfDefense;
+    console.log('Self-defense system enabled.');
     
     // Set up chat listener
     bot.on('chat', async (username, message) => {
