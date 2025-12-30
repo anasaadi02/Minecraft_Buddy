@@ -1,5 +1,7 @@
 // Combat commands: fight, kill
 
+const { isWhitelisted } = require('../utils/whitelist');
+
 module.exports = function(bot, mcData, defaultMovements, goals) {
   
   return {
@@ -117,7 +119,14 @@ module.exports = function(bot, mcData, defaultMovements, goals) {
 
     if (targetName) {
       const player = Object.values(bot.players).find(p => p.username.toLowerCase() === targetName.toLowerCase());
-      if (player && player.entity) targetEntity = player.entity;
+      if (player && player.entity) {
+        // Check if player is whitelisted - never attack whitelisted players
+        if (isWhitelisted(player.username)) {
+          bot.chat('I cannot attack whitelisted players.');
+          return;
+        }
+        targetEntity = player.entity;
+      }
     } else {
       const hostiles = Object.values(bot.entities).filter(e => {
         // Check if entity type is 'hostile' or 'mob' (same as self-defense and survival logic)

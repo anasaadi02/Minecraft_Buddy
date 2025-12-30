@@ -53,7 +53,8 @@ const states = {
   guardState: { active: false, pos: null, radius: 10, interval: null },
   patrolState: { active: false, names: [], idx: 0, interval: null },
   roamState: { active: false, interval: null, lastMoveTime: 0, currentTarget: null },
-  gatherWoodState: { active: false, interval: null }
+  gatherWoodState: { active: false, interval: null },
+  woodcutterState: { active: false, center: null, radius: null, interval: null }
 };
 
 // Make states accessible from bot object
@@ -84,7 +85,6 @@ bot.once('spawn', () => {
   console.log(`Connected to server version ${bot.version}`);
   setTimeout(() => {
     try {
-  bot.chat('Hello! I am alive.');
     } catch (e) {
       console.error('Failed to send chat:', e.message);
     }
@@ -104,6 +104,10 @@ bot.once('spawn', () => {
     const selfDefense = initSelfDefense(bot);
     bot.selfDefense = selfDefense;
     console.log('Self-defense system enabled.');
+    
+    // Initialize water floating system
+    initWaterFloating(bot, mcData);
+    console.log('Water floating system enabled.');
     
     // Set up chat listener
     bot.on('chat', async (username, message) => {
@@ -131,4 +135,50 @@ bot.on('login', () => {
 bot.on('death', () => {
   console.log('Bot died!');
 });
+
+// Water floating system - keeps bot afloat when in water and idle
+function initWaterFloating(bot, mcData) {
+  let lastJumpTime = 0;
+  const jumpCooldown = 500; // Minimum time between jumps (ms)
+  
+  bot.on('physicsTick', () => {
+    // Only float if bot is not actively doing something
+    const hasActiveGoal = bot.pathfinder.goal !== null;
+    const isCollecting = bot.collectBlock.task !== null;
+    const isFighting = bot.pvp.target !== null;
+    
+    // Skip if bot is actively doing something
+    if (hasActiveGoal || isCollecting || isFighting) {
+      return;
+    }
+    
+    // Check if bot is in water
+    const botPos = bot.entity.position;
+    const blockAtFeet = bot.blockAt(botPos);
+    const blockAtBody = bot.blockAt(botPos.offset(0, 1, 0));
+    
+    const isInWater = (block) => {
+      if (!block) return false;
+      const name = block.name || '';
+      return name === 'water' || name === 'flowing_water';
+    };
+    
+    if (isInWater(blockAtFeet) || isInWater(blockAtBody)) {
+      // Bot is in water, make it jump to float
+      const now = Date.now();
+      if (now - lastJumpTime > jumpCooldown) {
+        bot.setControlState('jump', true);
+        lastJumpTime = now;
+        
+        // Release jump after a short time (continuous jumping)
+        setTimeout(() => {
+          bot.setControlState('jump', false);
+        }, 100);
+      }
+    } else {
+      // Not in water, make sure jump is released
+      bot.setControlState('jump', false);
+    }
+  });
+}
 

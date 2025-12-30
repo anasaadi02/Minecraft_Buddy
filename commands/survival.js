@@ -1,5 +1,7 @@
 // Survival commands: survival on/off, guard, auto eat, eat, status, stop
 
+const { isWhitelisted } = require('../utils/whitelist');
+
 module.exports = function(bot, mcData, defaultMovements, goals, states) {
   
   // Use the shared states object instead of creating a local copy
@@ -278,6 +280,17 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     if (bot.selfDefense && bot.selfDefense.isDefending()) {
       bot.selfDefense.stopDefense();
       console.log('[STOP] Reset self-defense state');
+    }
+    
+    // Stop woodcutter mode if active
+    if (state.woodcutterState && state.woodcutterState.active) {
+      if (state.woodcutterState.interval) {
+        clearInterval(state.woodcutterState.interval);
+        state.woodcutterState.interval = null;
+      }
+      state.woodcutterState.active = false;
+      try { bot.collectBlock.cancelTask(); } catch (_) {}
+      console.log('[STOP] Stopped woodcutter mode');
     }
     
     bot.chat('Stopped current actions.');
@@ -570,7 +583,15 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       const allEntities = Object.values(bot.entities);
       const hostiles = allEntities
         .filter(isHostileEntity)
-        .filter(e => position.distanceTo(e.position) <= state.combatRange);
+        .filter(e => position.distanceTo(e.position) <= state.combatRange)
+        // NEVER attack whitelisted players
+        .filter(e => {
+          if (e.type === 'player') {
+            const username = e.username || '';
+            return !isWhitelisted(username);
+          }
+          return true; // Mobs are always valid targets
+        });
       
       console.log(`[SURVIVAL] Checking for threats - Total entities: ${allEntities.length}, Hostiles in range: ${hostiles.length}, Health: ${health}/20`);
       
@@ -592,6 +613,12 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       hostiles.sort((a, b) => position.distanceTo(a.position) - position.distanceTo(b.position));
       const target = hostiles[0];
       if (!target) return;
+      
+      // Double-check: Never attack whitelisted players
+      if (target.type === 'player' && isWhitelisted(target.username || '')) {
+        console.log('[SURVIVAL] Target is whitelisted, skipping attack');
+        return;
+      }
       
       const distance = Math.round(position.distanceTo(target.position));
       console.log(`[SURVIVAL] Engaging ${target.name} at ${distance} blocks`);
@@ -647,11 +674,24 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
         bot.pathfinder.setGoal(new goals.GoalNear(state.guardState.pos.x, state.guardState.pos.y, state.guardState.pos.z, 1));
       }
 
-      // Attack nearest hostile within radius
-      const hostiles = Object.values(bot.entities).filter(e => isHostileEntity(e));
+      // Attack nearest hostile within radius (but NEVER whitelisted players)
+      const hostiles = Object.values(bot.entities)
+        .filter(e => isHostileEntity(e))
+        .filter(e => {
+          // NEVER attack whitelisted players
+          if (e.type === 'player') {
+            const username = e.username || '';
+            return !isWhitelisted(username);
+          }
+          return true; // Mobs are always valid targets
+        });
       hostiles.sort((a, b) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
       const target = hostiles.find(h => h.position.distanceTo(state.guardState.pos) <= state.guardState.radius);
       if (target) {
+        // Double-check: Never attack whitelisted players
+        if (target.type === 'player' && isWhitelisted(target.username || '')) {
+          return; // Skip whitelisted players
+        }
         // Equip weapon before combat if not already equipped
         if (!state.hasEquippedWeapon) {
           await equipBestWeapon();

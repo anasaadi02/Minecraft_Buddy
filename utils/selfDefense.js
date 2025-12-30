@@ -1,5 +1,7 @@
 // Self-defense system: automatically fight back when attacked
 
+const { isWhitelisted } = require('./whitelist');
+
 module.exports = function(bot) {
   let isDefending = false;
   let currentAttacker = null;
@@ -9,9 +11,16 @@ module.exports = function(bot) {
   function saveCurrentTask() {
     previousTask = {
       gatheringWood: bot.states?.gatherWoodState?.active || false,
+      woodcutter: bot.states?.woodcutterState?.active || false,
       patrolling: bot.patrolState?.active || false,
       roaming: bot.roamState?.active || false,
     };
+    
+    // Temporarily pause woodcutter mode if active
+    if (previousTask.woodcutter && bot.states?.woodcutterState) {
+      console.log('[SELF-DEFENSE] Pausing woodcutter mode for defense...');
+      // Don't stop it, just mark that we need to resume it
+    }
   }
   
   // Resume the task the bot was doing before combat
@@ -19,7 +28,14 @@ module.exports = function(bot) {
     if (!previousTask) return;
     
     // Note: Tasks will continue automatically if their intervals are still running
-    if (previousTask.gatheringWood) {
+    if (previousTask.woodcutter) {
+      console.log('[SELF-DEFENSE] Resuming woodcutter mode...');
+      // Woodcutter mode interval should still be running, just need to make sure it's active
+      if (bot.states?.woodcutterState && !bot.states.woodcutterState.active) {
+        // If it was stopped, we can't resume it automatically
+        console.log('[SELF-DEFENSE] Woodcutter mode was stopped, cannot auto-resume');
+      }
+    } else if (previousTask.gatheringWood) {
       console.log('[SELF-DEFENSE] Resuming wood gathering...');
     } else if (previousTask.patrolling) {
       console.log('[SELF-DEFENSE] Resuming patrol...');
@@ -98,10 +114,20 @@ module.exports = function(bot) {
     console.log(`[SELF-DEFENSE] Attacked by ${attacker.name || attacker.username || attacker.displayName || 'unknown'}!`);
     bot.chat('I\'m under attack! Fighting back!');
     
-    // Save current task
+    // Save current task (including woodcutter mode)
     saveCurrentTask();
     
-    // Equip best weapon
+    // Stop any active collection/gathering tasks
+    try {
+      bot.collectBlock.cancelTask();
+    } catch (_) {}
+    
+    // Clear pathfinding
+    try {
+      bot.pathfinder.setGoal(null);
+    } catch (_) {}
+    
+    // Equip best weapon (prefer sword over axe if available, to avoid taking axe from woodcutter)
     await equipBestWeapon();
     
     // Attack the attacker
@@ -181,14 +207,28 @@ module.exports = function(bot) {
     if (targetingBot.length > 0) {
       // Prioritize players over mobs if both are targeting
       const targetingPlayers = targetingBot.filter(e => e.type === 'player');
-      const targetToUse = targetingPlayers.length > 0 ? targetingPlayers : targetingBot;
       
-      // Find closest entity that's targeting the bot
-      targetToUse.sort((a, b) => 
-        bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)
-      );
-      attacker = targetToUse[0];
-      console.log(`[SELF-DEFENSE] Detected attacker: ${attacker.name || attacker.username || attacker.displayName} (targeting bot)`);
+      // Filter out whitelisted players - never attack them
+      const nonWhitelistedPlayers = targetingPlayers.filter(e => {
+        const username = e.username || '';
+        return !isWhitelisted(username);
+      });
+      
+      // Use non-whitelisted players if available, otherwise use mobs
+      const targetToUse = nonWhitelistedPlayers.length > 0 ? nonWhitelistedPlayers : 
+                         (targetingPlayers.length > 0 ? [] : targetingBot.filter(e => e.type !== 'player'));
+      
+      if (targetToUse.length > 0) {
+        // Find closest entity that's targeting the bot
+        targetToUse.sort((a, b) => 
+          bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)
+        );
+        attacker = targetToUse[0];
+        console.log(`[SELF-DEFENSE] Detected attacker: ${attacker.name || attacker.username || attacker.displayName} (targeting bot)`);
+      } else if (targetingPlayers.length > 0) {
+        // All targeting players are whitelisted - don't attack
+        console.log('[SELF-DEFENSE] Attacker is whitelisted, ignoring attack.');
+      }
     }
     
     // Second priority: Check for nearby hostile mobs (they're likely the attacker)
@@ -222,15 +262,26 @@ module.exports = function(bot) {
       const nearbyPlayers = nearbyEntities.filter(e => e.type === 'player');
       if (nearbyPlayers.length > 0) {
         // Only target a player if they're very close (within 4 blocks) - likely attacking
-        const closePlayers = nearbyPlayers.filter(p => 
-          bot.entity.position.distanceTo(p.position) <= 4
-        );
+        // BUT NEVER attack whitelisted players
+        const closePlayers = nearbyPlayers.filter(p => {
+          const dist = bot.entity.position.distanceTo(p.position);
+          const username = p.username || '';
+          return dist <= 4 && !isWhitelisted(username);
+        });
         if (closePlayers.length > 0) {
           closePlayers.sort((a, b) => 
             bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position)
           );
           attacker = closePlayers[0];
           console.log(`[SELF-DEFENSE] Detected attacker: ${attacker.username} (close player)`);
+        } else {
+          // Check if there were close players but they were all whitelisted
+          const allCloseWhitelisted = nearbyPlayers.filter(p => 
+            bot.entity.position.distanceTo(p.position) <= 4
+          ).every(p => isWhitelisted(p.username || ''));
+          if (allCloseWhitelisted) {
+            console.log('[SELF-DEFENSE] Close players are whitelisted, ignoring attack.');
+          }
         }
       }
     }
@@ -254,6 +305,17 @@ module.exports = function(bot) {
       // Attacker is dead or despawned
       stopDefense();
       return;
+    }
+    
+    // Check if attacker is a whitelisted player - stop attacking immediately
+    if (attacker.type === 'player') {
+      const username = attacker.username || '';
+      if (isWhitelisted(username)) {
+        console.log(`[SELF-DEFENSE] Attacker ${username} is whitelisted, stopping attack.`);
+        bot.chat('You are whitelisted, I will not attack you.');
+        stopDefense();
+        return;
+      }
     }
     
     const distance = bot.entity.position.distanceTo(attacker.position);

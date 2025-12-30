@@ -36,6 +36,21 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     'stop gather wood': () => stopGatherWood(),
     'stop wood': () => stopGatherWood(),
     
+    'woodcutter mode': async (username, message) => {
+      const parts = message.split(/\s+/);
+      const diameter = parseInt(parts[2]) || 32; // Default 32 blocks diameter
+      await startWoodcutterMode(diameter);
+    },
+    
+    'woodcutter': async (username, message) => {
+      const parts = message.split(/\s+/);
+      const diameter = parseInt(parts[1]) || 32; // Default 32 blocks diameter
+      await startWoodcutterMode(diameter);
+    },
+    
+    'stop woodcutter': () => stopWoodcutterMode(),
+    'woodcutter stop': () => stopWoodcutterMode(),
+    
     'gather ore': async (username, message) => {
       const parts = message.split(/\s+/);
       let oreName = 'stone'; // default
@@ -566,6 +581,301 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     states.gatherWoodState.active = false;
     try { bot.collectBlock.cancelTask(); } catch (_) {}
     bot.chat('Stopped gathering wood.');
+  }
+  
+  // Woodcutter mode: Cut all wood in a defined area
+  async function startWoodcutterMode(diameter) {
+    // Initialize woodcutterState if it doesn't exist
+    if (!states.woodcutterState) {
+      states.woodcutterState = { active: false, center: null, radius: null, interval: null, finished: false };
+    }
+    
+    // Check if already active
+    if (states.woodcutterState.active) {
+      bot.chat('Woodcutter mode is already active. Say "stop woodcutter" to stop.');
+      return;
+    }
+    
+    // Check for axe
+    const hasAxe = await equipAxe();
+    if (!hasAxe) {
+      bot.chat('I need an axe to cut wood!');
+      return;
+    }
+    
+    // Set center position and radius
+    const center = bot.entity.position.clone();
+    const radius = diameter / 2; // Convert diameter to radius
+    
+    states.woodcutterState.active = true;
+    states.woodcutterState.center = center;
+    states.woodcutterState.radius = radius;
+    states.woodcutterState.finished = false; // Reset finished flag
+    
+    bot.chat(`Starting woodcutter mode in area (diameter: ${diameter} blocks).`);
+    console.log(`[WOODCUTTER] Starting mode - Center: ${center.x}, ${center.y}, ${center.z}, Radius: ${radius}`);
+    
+    // Start the woodcutter loop - optimized to reduce overhead
+    let isCollecting = false; // Prevent concurrent collection attempts
+    
+    states.woodcutterState.interval = setInterval(async () => {
+      if (!states.woodcutterState.active || isCollecting) {
+        return;
+      }
+      
+      // Don't collect if self-defense is active
+      if (bot.selfDefense && bot.selfDefense.isDefending()) {
+        console.log('[WOODCUTTER] Paused: Self-defense active');
+        return;
+      }
+      
+      // Quick checks first (lightweight)
+      const emptySlots = bot.inventory.emptySlotCount();
+      if (emptySlots === 0) {
+        bot.chat('Inventory is full! Stopping woodcutter mode.');
+        console.log('[WOODCUTTER] Stopped: Inventory full');
+        await finishWoodcutterMode();
+        return;
+      }
+      
+      // Check if we still have an axe (only check inventory once)
+      const inventory = bot.inventory.items();
+      const hasAxe = ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'golden_axe', 'wooden_axe']
+        .some(axeName => inventory.find(item => item.name === axeName));
+      
+      if (!hasAxe) {
+        bot.chat('No axes left in inventory! Stopping woodcutter mode.');
+        console.log('[WOODCUTTER] Stopped: No axes left');
+        await finishWoodcutterMode();
+        return;
+      }
+      
+      // Find logs in the defined area (this is the expensive operation)
+      const logsInArea = findLogsInArea(states.woodcutterState.center, states.woodcutterState.radius);
+      
+      if (logsInArea.length === 0) {
+        // No more logs in area, finish up
+        bot.chat('No more wood in area! Finishing woodcutter mode.');
+        console.log('[WOODCUTTER] Stopped: No more wood in area');
+        await finishWoodcutterMode();
+        return;
+      }
+      
+      // Cut the closest log
+      const targetBlock = bot.blockAt(logsInArea[0]);
+      if (!targetBlock) {
+        return;
+      }
+      
+      isCollecting = true; // Mark as collecting to prevent concurrent attempts
+      
+      // Check if log is below us and we need to dig
+      const botY = Math.floor(bot.entity.position.y);
+      const blockY = Math.floor(targetBlock.position.y);
+      
+      if (blockY < botY - 1) {
+        await digStaircaseToBlock(targetBlock);
+      }
+      
+      try { bot.pathfinder.setGoal(null); } catch (_) {}
+      try { bot.pvp.stop(); } catch (_) {}
+      
+      try {
+        bot.pathfinder.setMovements(gatheringMovements);
+      } catch (_) {}
+      
+      try {
+        await bot.collectBlock.collect(targetBlock);
+        console.log(`[WOODCUTTER] Collected log. ${logsInArea.length - 1} logs remaining. Empty slots: ${emptySlots}`);
+      } catch (err) {
+        console.error('[WOODCUTTER] Failed to collect log:', err.message);
+      } finally {
+        isCollecting = false; // Reset flag after collection attempt
+      }
+    }, 4000); // Check every 4 seconds (balanced between responsiveness and performance)
+  }
+  
+  // Find all logs within a circular area
+  function findLogsInArea(center, radius) {
+    const logNames = [
+      'oak_log', 'spruce_log', 'birch_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
+      'mangrove_log', 'cherry_log', 'pale_oak_log',
+      'stripped_oak_log', 'stripped_spruce_log', 'stripped_birch_log', 'stripped_jungle_log',
+      'stripped_acacia_log', 'stripped_dark_oak_log', 'stripped_mangrove_log', 'stripped_cherry_log',
+      'stripped_pale_oak_log',
+      'oak_wood', 'spruce_wood', 'birch_wood', 'jungle_wood', 'acacia_wood', 'dark_oak_wood',
+      'mangrove_wood', 'cherry_wood', 'pale_oak_wood',
+      'stripped_oak_wood', 'stripped_spruce_wood', 'stripped_birch_wood', 'stripped_jungle_wood',
+      'stripped_acacia_wood', 'stripped_dark_oak_wood', 'stripped_mangrove_wood', 'stripped_cherry_wood',
+      'stripped_pale_oak_wood'
+    ];
+    
+    const logIds = logNames
+      .map(name => {
+        const blockDef = mcData.blocksByName[name];
+        return blockDef ? blockDef.id : null;
+      })
+      .filter(Boolean);
+    
+    const logNameSet = new Set(logNames);
+    const logPositions = [];
+    
+    // Scan in a cube around the center
+    const scanRange = Math.ceil(radius);
+    for (let x = -scanRange; x <= scanRange; x++) {
+      for (let y = -scanRange; y <= scanRange; y++) {
+        for (let z = -scanRange; z <= scanRange; z++) {
+          const checkPos = center.offset(x, y, z);
+          const dist = center.distanceTo(checkPos);
+          
+          // Check if within radius (circular area)
+          if (dist > radius) continue;
+          
+          const block = bot.blockAt(checkPos);
+          if (!block) continue;
+          
+          let isLog = false;
+          
+          // Check by block ID
+          if (logIds.includes(block.type)) {
+            isLog = true;
+          } else {
+            const blockName = block.name || '';
+            if (logNameSet.has(blockName)) {
+              isLog = true;
+            } else if ((blockName.includes('_log') || blockName.includes('_wood')) &&
+                       !blockName.includes('leaves') && !blockName.includes('planks') && 
+                       !blockName.includes('sapling') && !blockName.includes('fence') &&
+                       !blockName.includes('door') && !blockName.includes('trapdoor') &&
+                       !blockName.includes('slab') && !blockName.includes('stairs') &&
+                       !blockName.includes('button') && !blockName.includes('pressure_plate')) {
+              isLog = true;
+            }
+          }
+          
+          if (isLog && !isInWater(checkPos)) {
+            logPositions.push(checkPos);
+          }
+        }
+      }
+    }
+    
+    // Sort by distance from bot's current position
+    const botPos = bot.entity.position;
+    logPositions.sort((a, b) => {
+      const distA = botPos.distanceTo(a);
+      const distB = botPos.distanceTo(b);
+      return distA - distB;
+    });
+    
+    return logPositions;
+  }
+  
+  // Finish woodcutter mode and deposit wood in chest if available
+  async function finishWoodcutterMode() {
+    // Prevent multiple calls
+    if (states.woodcutterState?.finished) {
+      return;
+    }
+    
+    // Mark as finished first to prevent re-entry
+    if (states.woodcutterState) {
+      states.woodcutterState.finished = true;
+    }
+    
+    // Stop the loop first
+    stopWoodcutterMode();
+    
+    // Find chest in the area
+    const center = states.woodcutterState?.center || bot.entity.position;
+    const radius = states.woodcutterState?.radius || 32;
+    
+    const chest = bot.findBlock({
+      matching: (block) => block && (block.name === 'chest' || block.name === 'trapped_chest'),
+      maxDistance: radius * 2 // Search in the area
+    });
+    
+    if (chest) {
+      bot.chat('Found chest in area. Depositing wood...');
+      
+      try {
+        // Get all wood items from inventory
+        const inventory = bot.inventory.items();
+        const woodItems = inventory.filter(item => {
+          const name = item.name || '';
+          return name.includes('log') || name.includes('wood') || 
+                 name.includes('planks') || name.includes('stripped');
+        });
+        
+        if (woodItems.length === 0) {
+          bot.chat('No wood items to deposit.');
+          bot.chat('Woodcutter mode completed!');
+          return;
+        }
+        
+        // Go to chest
+        await goNearPosition(bot, defaultMovements, goals, chest.position, 1.6, 8000);
+        await sleep(500);
+        
+        // Open chest
+        const chestBlock = bot.blockAt(chest.position);
+        if (!chestBlock) {
+          bot.chat('Chest not found.');
+          bot.chat('Woodcutter mode completed!');
+          return;
+        }
+        
+        const chestWindow = await bot.openChest(chestBlock);
+        
+        if (!chestWindow) {
+          bot.chat('Failed to open chest.');
+          bot.chat('Woodcutter mode completed!');
+          return;
+        }
+        
+        // Deposit wood items
+        let deposited = 0;
+        for (const item of woodItems) {
+          try {
+            await chestWindow.deposit(item.type, null, item.count);
+            deposited += item.count;
+          } catch (e) {
+            // Item might not fit, continue with next
+            continue;
+          }
+        }
+        
+        // Close chest
+        chestWindow.close();
+        
+        bot.chat(`Deposited ${deposited} wood items in chest.`);
+      } catch (err) {
+        console.error('[WOODCUTTER] Failed to deposit wood:', err.message);
+        bot.chat('Failed to deposit wood in chest.');
+      }
+    } else {
+      bot.chat('No chest found in area. Wood remains in inventory.');
+    }
+    
+    bot.chat('Woodcutter mode completed!');
+  }
+  
+  function stopWoodcutterMode() {
+    if (!states.woodcutterState) {
+      states.woodcutterState = { active: false, center: null, radius: null, interval: null, finished: false };
+    }
+    
+    if (states.woodcutterState.interval) {
+      clearInterval(states.woodcutterState.interval);
+      states.woodcutterState.interval = null;
+    }
+    states.woodcutterState.active = false;
+    try { bot.collectBlock.cancelTask(); } catch (_) {}
+    
+    // Only send message if not finished (finished mode will send its own message)
+    if (!states.woodcutterState.finished) {
+      bot.chat('Stopped woodcutter mode.');
+    }
   }
   
   async function handleGatherOre(oreName, countTarget) {
