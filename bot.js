@@ -54,7 +54,8 @@ const states = {
   patrolState: { active: false, names: [], idx: 0, interval: null },
   roamState: { active: false, interval: null, lastMoveTime: 0, currentTarget: null },
   gatherWoodState: { active: false, interval: null },
-  woodcutterState: { active: false, center: null, radius: null, interval: null }
+  woodcutterState: { active: false, center: null, radius: null, interval: null },
+  farmerState: { active: false, center: null, bounds: null, phase: 'planting', interval: null, waiting: false }
 };
 
 // Make states accessible from bot object

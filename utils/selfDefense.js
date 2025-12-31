@@ -12,6 +12,7 @@ module.exports = function(bot) {
     previousTask = {
       gatheringWood: bot.states?.gatherWoodState?.active || false,
       woodcutter: bot.states?.woodcutterState?.active || false,
+      farmer: bot.states?.farmerState?.active || false,
       patrolling: bot.patrolState?.active || false,
       roaming: bot.roamState?.active || false,
     };
@@ -19,6 +20,12 @@ module.exports = function(bot) {
     // Temporarily pause woodcutter mode if active
     if (previousTask.woodcutter && bot.states?.woodcutterState) {
       console.log('[SELF-DEFENSE] Pausing woodcutter mode for defense...');
+      // Don't stop it, just mark that we need to resume it
+    }
+    
+    // Temporarily pause farmer mode if active
+    if (previousTask.farmer && bot.states?.farmerState) {
+      console.log('[SELF-DEFENSE] Pausing farmer mode for defense...');
       // Don't stop it, just mark that we need to resume it
     }
   }
@@ -34,6 +41,13 @@ module.exports = function(bot) {
       if (bot.states?.woodcutterState && !bot.states.woodcutterState.active) {
         // If it was stopped, we can't resume it automatically
         console.log('[SELF-DEFENSE] Woodcutter mode was stopped, cannot auto-resume');
+      }
+    } else if (previousTask.farmer) {
+      console.log('[SELF-DEFENSE] Resuming farmer mode...');
+      // Farmer mode interval should still be running, just need to make sure it's active
+      if (bot.states?.farmerState && !bot.states.farmerState.active) {
+        // If it was stopped, we can't resume it automatically
+        console.log('[SELF-DEFENSE] Farmer mode was stopped, cannot auto-resume');
       }
     } else if (previousTask.gatheringWood) {
       console.log('[SELF-DEFENSE] Resuming wood gathering...');

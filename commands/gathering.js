@@ -29,6 +29,19 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     return originalGetBlockCost ? originalGetBlockCost(pos) : 1;
   };
   
+  // ========== FARMER MODE CONSTANTS ==========
+  // Seed types that can be planted
+  const SEED_TYPES = [
+    'wheat_seeds', 'beetroot_seeds', 'carrot', 'potato', 
+    'pumpkin_seeds', 'melon_seeds', 'nether_wart'
+  ];
+  
+  // Crop blocks that can be harvested
+  const CROP_TYPES = [
+    'wheat', 'beetroot', 'carrots', 'potatoes',
+    'pumpkin', 'melon', 'nether_wart'
+  ];
+  
   return {
     'gather wood': async () => await startGatherWood(),
     'wood': async () => await startGatherWood(),
@@ -50,6 +63,11 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
     
     'stop woodcutter': () => stopWoodcutterMode(),
     'woodcutter stop': () => stopWoodcutterMode(),
+    
+    'farmer mode': async () => await startFarmerMode(),
+    'farmer': async () => await startFarmerMode(),
+    'stop farmer': () => stopFarmerMode(),
+    'farmer stop': () => stopFarmerMode(),
     
     'gather ore': async (username, message) => {
       const parts = message.split(/\s+/);
@@ -1214,5 +1232,647 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       console.error(e);
       bot.chat('Failed to pick up drops.');
     }
+  }
+  
+  // ========== FARMER MODE ==========
+  
+  // Find all farmland blocks in the area and determine boundaries
+  function findFarmlandArea() {
+    const botPos = bot.entity.position;
+    const searchRadius = 30; // 60 block diameter (30 block radius)
+    const farmlandBlocks = [];
+    
+    // Scan for farmland blocks
+    const scanRange = Math.ceil(searchRadius);
+    for (let x = -scanRange; x <= scanRange; x++) {
+      for (let y = -scanRange; y <= scanRange; y++) {
+        for (let z = -scanRange; z <= scanRange; z++) {
+          const checkPos = botPos.offset(x, y, z);
+          const dist = botPos.distanceTo(checkPos);
+          
+          if (dist > searchRadius) continue;
+          
+          const block = bot.blockAt(checkPos);
+          if (!block) continue;
+          
+          // Check if it's farmland (only actual farmland blocks, not dirt/grass)
+          if (block.name === 'farmland') {
+            // Check if there's air or a crop above (not a solid block)
+            const blockAbove = bot.blockAt(checkPos.offset(0, 1, 0));
+            if (blockAbove && (blockAbove.name === 'air' || CROP_TYPES.some(crop => blockAbove.name.includes(crop)))) {
+              farmlandBlocks.push(checkPos);
+            }
+          }
+        }
+      }
+    }
+    
+    if (farmlandBlocks.length === 0) {
+      return null;
+    }
+    
+    // Calculate boundaries (min/max x, z)
+    let minX = farmlandBlocks[0].x;
+    let maxX = farmlandBlocks[0].x;
+    let minZ = farmlandBlocks[0].z;
+    let maxZ = farmlandBlocks[0].z;
+    let minY = farmlandBlocks[0].y;
+    let maxY = farmlandBlocks[0].y;
+    
+    for (const pos of farmlandBlocks) {
+      minX = Math.min(minX, pos.x);
+      maxX = Math.max(maxX, pos.x);
+      minZ = Math.min(minZ, pos.z);
+      maxZ = Math.max(maxZ, pos.z);
+      minY = Math.min(minY, pos.y);
+      maxY = Math.max(maxY, pos.y);
+    }
+    
+    // Calculate center
+    const center = new Vec3(
+      (minX + maxX) / 2,
+      (minY + maxY) / 2,
+      (minZ + maxZ) / 2
+    );
+    
+    return {
+      center,
+      bounds: { minX, maxX, minZ, maxZ, minY, maxY },
+      blocks: farmlandBlocks
+    };
+  }
+  
+  // Check if a position is within the farmer area bounds
+  function isWithinFarmerArea(pos, bounds) {
+    if (!bounds) return false;
+    return pos.x >= bounds.minX && pos.x <= bounds.maxX &&
+           pos.z >= bounds.minZ && pos.z <= bounds.maxZ &&
+           pos.y >= bounds.minY - 2 && pos.y <= bounds.maxY + 2;
+  }
+  
+  // Find empty farmland blocks (farmland with air above)
+  function findEmptyFarmland(bounds) {
+    const emptyFarmland = [];
+    
+    if (!bounds) return emptyFarmland;
+    
+    // Get all farmland positions from the initial scan (stored in farmerState if available)
+    // Otherwise, scan the bounds
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
+      for (let z = bounds.minZ; z <= bounds.maxZ; z++) {
+        // Check Y levels within bounds
+        for (let y = bounds.minY; y <= bounds.maxY; y++) {
+          const pos = new Vec3(x, y, z);
+          const block = bot.blockAt(pos);
+          
+          if (!block) continue;
+          
+          // Check if it's farmland
+          if (block.name === 'farmland') {
+            // Check if there's air above (empty farmland)
+            const blockAbove = bot.blockAt(pos.offset(0, 1, 0));
+            if (blockAbove && blockAbove.name === 'air') {
+              emptyFarmland.push(pos);
+            }
+          }
+        }
+      }
+    }
+    
+    // Sort by distance from bot
+    const botPos = bot.entity.position;
+    emptyFarmland.sort((a, b) => {
+      const distA = botPos.distanceTo(a);
+      const distB = botPos.distanceTo(b);
+      return distA - distB;
+    });
+    
+    return emptyFarmland;
+  }
+  
+  // Find seeds in inventory
+  function findSeedsInInventory() {
+    const inventory = bot.inventory.items();
+    const seeds = [];
+    
+    for (const item of inventory) {
+      const itemName = item.name || '';
+      // Check if it's a seed type
+      if (SEED_TYPES.some(seed => itemName.includes(seed) || itemName === seed)) {
+        seeds.push(item);
+      }
+    }
+    
+    return seeds;
+  }
+  
+  // Plant a seed on farmland
+  async function plantSeed(seedItem, farmlandPos) {
+    try {
+      // Equip the seed
+      await bot.equip(seedItem, 'hand');
+      await sleep(200);
+      
+      // Go near the farmland
+      await goNearPosition(bot, defaultMovements, goals, farmlandPos, 1.5, 8000);
+      await sleep(300);
+      
+      // Get the farmland block
+      const farmlandBlock = bot.blockAt(farmlandPos);
+      if (!farmlandBlock || farmlandBlock.name !== 'farmland') {
+        return false;
+      }
+      
+      // Check if there's still air above
+      const blockAbove = bot.blockAt(farmlandPos.offset(0, 1, 0));
+      if (!blockAbove || blockAbove.name !== 'air') {
+        return false;
+      }
+      
+      // Plant the seed by right-clicking on the farmland
+      // We need to look at the block and activate it
+      await bot.lookAt(farmlandPos.offset(0, 1, 0));
+      await sleep(100);
+      
+      // Use activateBlock to plant (right-click)
+      await bot.activateBlock(farmlandBlock, new Vec3(0, 1, 0));
+      await sleep(200);
+      
+      return true;
+    } catch (err) {
+      console.error('[FARMER] Failed to plant seed:', err.message);
+      return false;
+    }
+  }
+  
+  // Find mature crops ready to harvest
+  function findMatureCrops(bounds) {
+    const matureCrops = [];
+    
+    if (!bounds) return matureCrops;
+    
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
+      for (let z = bounds.minZ; z <= bounds.maxZ; z++) {
+        for (let y = bounds.minY; y <= bounds.maxY + 1; y++) {
+          const pos = new Vec3(x, y, z);
+          const block = bot.blockAt(pos);
+          
+          if (!block) continue;
+          
+          // Check if it's a crop block
+          const blockName = block.name || '';
+          let isCrop = false;
+          let isMature = false;
+          
+          // Check crop types
+          if (blockName.includes('wheat') || blockName === 'wheat') {
+            isCrop = true;
+            // Wheat is mature when metadata.age >= 7
+            isMature = (block.metadata !== undefined && block.metadata >= 7) || 
+                       (block.state !== undefined && block.state.age >= 7);
+          } else if (blockName.includes('carrot') || blockName === 'carrots') {
+            isCrop = true;
+            isMature = (block.metadata !== undefined && block.metadata >= 7) ||
+                       (block.state !== undefined && block.state.age >= 7);
+          } else if (blockName.includes('potato') || blockName === 'potatoes') {
+            isCrop = true;
+            isMature = (block.metadata !== undefined && block.metadata >= 7) ||
+                       (block.state !== undefined && block.state.age >= 7);
+          } else if (blockName.includes('beetroot') || blockName === 'beetroot') {
+            isCrop = true;
+            isMature = (block.metadata !== undefined && block.metadata >= 3) ||
+                       (block.state !== undefined && block.state.age >= 3);
+          } else if (blockName === 'pumpkin' || blockName === 'melon') {
+            isCrop = true;
+            isMature = true; // Pumpkins and melons are always harvestable
+          } else if (blockName.includes('nether_wart')) {
+            isCrop = true;
+            isMature = (block.metadata !== undefined && block.metadata >= 3) ||
+                       (block.state !== undefined && block.state.age >= 3);
+          }
+          
+          // For crops without metadata, assume they're mature if they exist
+          if (isCrop && (isMature || block.metadata === undefined)) {
+            matureCrops.push(pos);
+          }
+        }
+      }
+    }
+    
+    // Sort by distance from bot
+    const botPos = bot.entity.position;
+    matureCrops.sort((a, b) => {
+      const distA = botPos.distanceTo(a);
+      const distB = botPos.distanceTo(b);
+      return distA - distB;
+    });
+    
+    return matureCrops;
+  }
+  
+  // Pick up dropped crops and seeds in the farmer area
+  async function pickupFarmerItems(bounds) {
+    if (!bounds) return;
+    
+    try {
+      // Find all item entities (dropped items)
+      const drops = Object.values(bot.entities).filter(e => e.name === 'item');
+      if (drops.length === 0) return;
+      
+      // Filter items within the farmer area bounds
+      const farmerItems = drops.filter(drop => {
+        const dropPos = drop.position;
+        return isWithinFarmerArea(dropPos, bounds);
+      });
+      
+      if (farmerItems.length === 0) return;
+      
+      // Sort by distance (closest first)
+      const botPos = bot.entity.position;
+      farmerItems.sort((a, b) => {
+        const distA = botPos.distanceTo(a.position);
+        const distB = botPos.distanceTo(b.position);
+        return distA - distB;
+      });
+      
+      // Pick up items (just move near them - mineflayer auto-collects nearby items)
+      for (const item of farmerItems) {
+        try {
+          // Check if item still exists
+          if (!bot.entities[item.id]) continue;
+          
+          // Check if drop is in water - if so, skip it
+          const dropBlock = bot.blockAt(item.position);
+          if (dropBlock && (dropBlock.name === 'water' || dropBlock.name === 'flowing_water' || 
+              dropBlock.name === 'lava' || dropBlock.name === 'flowing_lava')) {
+            continue; // Skip items in water/lava
+          }
+          
+          // Move near the item (within pickup range - mineflayer auto-collects within ~1 block)
+          await goNearPosition(bot, defaultMovements, goals, item.position, 1.2, 5000);
+          await sleep(200); // Wait for auto-pickup
+        } catch (err) {
+          // Item might have been picked up or moved, continue
+          continue;
+        }
+      }
+    } catch (err) {
+      console.error('[FARMER] Failed to pickup items:', err.message);
+    }
+  }
+  
+  // Harvest a crop
+  async function harvestCrop(cropPos) {
+    try {
+      // Go near the crop
+      await goNearPosition(bot, defaultMovements, goals, cropPos, 1.5, 8000);
+      await sleep(300);
+      
+      // Get the crop block
+      const cropBlock = bot.blockAt(cropPos);
+      if (!cropBlock) {
+        return false;
+      }
+      
+      // Check if it's still a crop
+      const blockName = cropBlock.name || '';
+      if (!CROP_TYPES.some(crop => blockName.includes(crop))) {
+        return false;
+      }
+      
+      // Break the crop
+      try {
+        await bot.dig(cropBlock);
+        await sleep(300);
+        
+        // Wait a bit for items to drop
+        await sleep(500);
+        
+        return true;
+      } catch (err) {
+        console.error('[FARMER] Failed to dig crop:', err.message);
+        return false;
+      }
+    } catch (err) {
+      console.error('[FARMER] Failed to harvest crop:', err.message);
+      return false;
+    }
+  }
+  
+  // Deposit crops in nearby chest
+  async function depositCropsInChest(bounds) {
+    if (!bounds) return;
+    
+    // Find chest in the area
+    const chest = bot.findBlock({
+      matching: (block) => block && (block.name === 'chest' || block.name === 'trapped_chest'),
+      maxDistance: 32
+    });
+    
+    if (!chest) {
+      return; // No chest found
+    }
+    
+    try {
+      bot.chat('Found chest. Depositing crops...');
+      
+      // Get all crop items from inventory (but NOT seeds - keep seeds for replanting)
+      const inventory = bot.inventory.items();
+      const cropItems = inventory.filter(item => {
+        const name = item.name || '';
+        // Check if it's a seed type - if so, exclude it
+        const isSeed = SEED_TYPES.some(seed => {
+          // Exact match or name includes the seed name
+          return name === seed || name.includes(seed);
+        });
+        if (isSeed) {
+          return false; // Don't deposit seeds
+        }
+        // Only deposit crops (harvested items), not seeds
+        return CROP_TYPES.some(crop => name.includes(crop));
+      });
+      
+      if (cropItems.length === 0) {
+        return; // No crops to deposit
+      }
+      
+      // Go to chest
+      await goNearPosition(bot, defaultMovements, goals, chest.position, 1.6, 8000);
+      await sleep(500);
+      
+      // Open chest
+      const chestBlock = bot.blockAt(chest.position);
+      if (!chestBlock) {
+        return;
+      }
+      
+      const chestWindow = await bot.openChest(chestBlock);
+      if (!chestWindow) {
+        return;
+      }
+      
+      // Deposit crop items
+      let deposited = 0;
+      for (const item of cropItems) {
+        try {
+          await chestWindow.deposit(item.type, null, item.count);
+          deposited += item.count;
+        } catch (e) {
+          // Item might not fit, continue with next
+          continue;
+        }
+      }
+      
+      // Close chest
+      chestWindow.close();
+      
+      if (deposited > 0) {
+        bot.chat(`Deposited ${deposited} crop items in chest.`);
+      }
+    } catch (err) {
+      console.error('[FARMER] Failed to deposit crops:', err.message);
+    }
+  }
+  
+  // Phase 1: Plant seeds
+  async function phase1Planting() {
+    const bounds = states.farmerState.bounds;
+    if (!bounds) return false;
+    
+    // Find seeds in inventory
+    const seeds = findSeedsInInventory();
+    if (seeds.length === 0) {
+      return false; // No seeds to plant
+    }
+    
+    // Find empty farmland
+    const emptyFarmland = findEmptyFarmland(bounds);
+    if (emptyFarmland.length === 0) {
+      return false; // No empty farmland
+    }
+    
+    // Plant seeds until we run out of seeds or empty farmland
+    let planted = 0;
+    for (const farmlandPos of emptyFarmland) {
+      // Check if we still have seeds
+      const remainingSeeds = findSeedsInInventory();
+      if (remainingSeeds.length === 0) {
+        break; // No more seeds
+      }
+      
+      // Use the first available seed
+      const seed = remainingSeeds[0];
+      
+      // Check if we're still in the farmer area
+      if (!isWithinFarmerArea(bot.entity.position, bounds)) {
+        // Try to return to center
+        await goNearPosition(bot, defaultMovements, goals, states.farmerState.center, 2, 8000);
+      }
+      
+      // Plant the seed
+      const success = await plantSeed(seed, farmlandPos);
+      if (success) {
+        planted++;
+        await sleep(200); // Small delay between plantings
+      }
+      
+      // Check if farmer mode is still active
+      if (!states.farmerState.active) {
+        break;
+      }
+    }
+    
+    if (planted > 0) {
+      bot.chat(`Planted ${planted} seeds.`);
+    }
+    
+    return planted > 0;
+  }
+  
+  // Phase 2: Harvest crops
+  async function phase2Harvesting() {
+    const bounds = states.farmerState.bounds;
+    if (!bounds) return false;
+    
+    // Find mature crops
+    const matureCrops = findMatureCrops(bounds);
+    if (matureCrops.length === 0) {
+      return false; // No crops to harvest
+    }
+    
+    // Harvest crops
+    let harvested = 0;
+    for (const cropPos of matureCrops) {
+      // Check if we're still in the farmer area
+      if (!isWithinFarmerArea(bot.entity.position, bounds)) {
+        // Try to return to center
+        await goNearPosition(bot, defaultMovements, goals, states.farmerState.center, 2, 8000);
+      }
+      
+      // Harvest the crop
+      const success = await harvestCrop(cropPos);
+      if (success) {
+        harvested++;
+        await sleep(300); // Small delay between harvests
+        
+        // Pick up dropped items after each harvest
+        await pickupFarmerItems(bounds);
+      }
+      
+      // Check if farmer mode is still active
+      if (!states.farmerState.active) {
+        break;
+      }
+      
+      // Check if inventory is getting full
+      if (bot.inventory.emptySlotCount() < 3) {
+        bot.chat('Inventory getting full. Depositing crops...');
+        await depositCropsInChest(bounds);
+        await sleep(500);
+      }
+    }
+    
+    // Final pickup pass to catch any missed items
+    if (harvested > 0) {
+      await pickupFarmerItems(bounds);
+      bot.chat(`Harvested ${harvested} crops.`);
+      
+      // After harvesting, deposit in chest if available
+      await depositCropsInChest(bounds);
+    }
+    
+    return harvested > 0;
+  }
+  
+  // Start farmer mode
+  async function startFarmerMode() {
+    // Initialize farmerState if it doesn't exist
+    if (!states.farmerState) {
+      states.farmerState = { active: false, center: null, bounds: null, phase: 'planting', interval: null, waiting: false };
+    }
+    
+    // Check if already active
+    if (states.farmerState.active) {
+      bot.chat('Farmer mode is already active. Say "stop farmer" to stop.');
+      return;
+    }
+    
+    // Find farmland area
+    bot.chat('Scanning for farmland...');
+    const farmlandArea = findFarmlandArea();
+    
+    if (!farmlandArea || farmlandArea.blocks.length === 0) {
+      bot.chat('No farmland found in the area!');
+      return;
+    }
+    
+    // Set up farmer state
+    states.farmerState.active = true;
+    states.farmerState.center = farmlandArea.center;
+    states.farmerState.bounds = farmlandArea.bounds;
+    states.farmerState.phase = 'planting';
+    states.farmerState.waiting = false;
+    
+    bot.chat(`Starting farmer mode! Found ${farmlandArea.blocks.length} farmland blocks.`);
+    console.log(`[FARMER] Starting mode - Center: ${farmlandArea.center.x}, ${farmlandArea.center.y}, ${farmlandArea.center.z}`);
+    console.log(`[FARMER] Bounds: X[${farmlandArea.bounds.minX}, ${farmlandArea.bounds.maxX}], Z[${farmlandArea.bounds.minZ}, ${farmlandArea.bounds.maxZ}]`);
+    
+    // Start the farmer loop
+    let isWorking = false; // Prevent concurrent operations
+    
+    states.farmerState.interval = setInterval(async () => {
+      if (!states.farmerState.active || isWorking) {
+        return;
+      }
+      
+      // Don't work if self-defense is active
+      if (bot.selfDefense && bot.selfDefense.isDefending()) {
+        console.log('[FARMER] Paused: Self-defense active');
+        return;
+      }
+      
+      // Check if bot is still in the farmer area
+      if (!isWithinFarmerArea(bot.entity.position, states.farmerState.bounds)) {
+        // Return to center
+        console.log('[FARMER] Bot left area, returning to center...');
+        try {
+          await goNearPosition(bot, defaultMovements, goals, states.farmerState.center, 2, 8000);
+        } catch (e) {
+          console.error('[FARMER] Failed to return to center:', e.message);
+        }
+        return;
+      }
+      
+      isWorking = true;
+      
+      try {
+        // Alternate between phases
+        if (states.farmerState.phase === 'planting') {
+          const planted = await phase1Planting();
+          
+          if (planted) {
+            // Successfully planted, switch to harvesting
+            states.farmerState.phase = 'harvesting';
+            states.farmerState.waiting = false;
+          } else {
+            // No seeds or no empty farmland, check for crops to harvest
+            const hasCrops = findMatureCrops(states.farmerState.bounds).length > 0;
+            if (hasCrops) {
+              states.farmerState.phase = 'harvesting';
+              states.farmerState.waiting = false;
+            } else {
+              // Nothing to do, wait
+              states.farmerState.waiting = true;
+              console.log('[FARMER] Waiting: No seeds to plant and no crops to harvest');
+            }
+          }
+        } else if (states.farmerState.phase === 'harvesting') {
+          const harvested = await phase2Harvesting();
+          
+          if (harvested) {
+            // Successfully harvested, switch to planting
+            states.farmerState.phase = 'planting';
+            states.farmerState.waiting = false;
+          } else {
+            // No crops to harvest, check for empty farmland
+            const emptyFarmland = findEmptyFarmland(states.farmerState.bounds);
+            const hasSeeds = findSeedsInInventory().length > 0;
+            
+            if (emptyFarmland.length > 0 && hasSeeds) {
+              states.farmerState.phase = 'planting';
+              states.farmerState.waiting = false;
+            } else {
+              // Nothing to do, wait
+              states.farmerState.waiting = true;
+              console.log('[FARMER] Waiting: No crops to harvest and no seeds/empty farmland');
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[FARMER] Error in farmer loop:', err.message);
+      } finally {
+        isWorking = false;
+      }
+    }, 3000); // Check every 3 seconds
+  }
+  
+  // Stop farmer mode
+  function stopFarmerMode() {
+    if (!states.farmerState) {
+      states.farmerState = { active: false, center: null, bounds: null, phase: 'planting', interval: null, waiting: false };
+    }
+    
+    if (states.farmerState.interval) {
+      clearInterval(states.farmerState.interval);
+      states.farmerState.interval = null;
+    }
+    
+    states.farmerState.active = false;
+    states.farmerState.waiting = false;
+    
+    try { bot.pathfinder.setGoal(null); } catch (_) {}
+    try { bot.collectBlock.cancelTask(); } catch (_) {}
+    
+    bot.chat('Stopped farmer mode.');
   }
 };
