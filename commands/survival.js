@@ -365,8 +365,8 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       return;
     }
     
-    const foodItems = bot.inventory.items().filter(item => isFood(item.name));
-    
+      const foodItems = bot.inventory.items().filter(item => isFood(item.name));
+      
     console.log(`[AUTO-EAT] Found ${foodItems.length} food items: ${foodItems.map(i => `${i.name}(${i.count})`).join(', ')}`);
     
     if (foodItems.length === 0) {
@@ -378,46 +378,46 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
       return;
     }
     
-    // Reset the warning flag since we have food now
-    state.noFoodWarned = false;
-    
-    // Smart food selection: don't waste good food on small hunger
-    const hungerNeeded = 20 - food;
-    
-    // Sort by food value (lower to higher for efficiency)
-    foodItems.sort((a, b) => {
-      return getFoodValue(a.name) - getFoodValue(b.name);
-    });
-    
-    // Find the most efficient food (smallest that satisfies hunger need)
-    let chosenFood = foodItems[foodItems.length - 1]; // Default to best if critical
-    
+        // Reset the warning flag since we have food now
+        state.noFoodWarned = false;
+        
+        // Smart food selection: don't waste good food on small hunger
+        const hungerNeeded = 20 - food;
+        
+        // Sort by food value (lower to higher for efficiency)
+        foodItems.sort((a, b) => {
+          return getFoodValue(a.name) - getFoodValue(b.name);
+        });
+        
+        // Find the most efficient food (smallest that satisfies hunger need)
+        let chosenFood = foodItems[foodItems.length - 1]; // Default to best if critical
+        
     if (food > 8) {
-      // Not critical, use efficient food
-      for (const item of foodItems) {
-        const itemFood = getFoodValue(item.name);
-        if (itemFood >= hungerNeeded) {
-          chosenFood = item;
-          break;
+          // Not critical, use efficient food
+          for (const item of foodItems) {
+            const itemFood = getFoodValue(item.name);
+            if (itemFood >= hungerNeeded) {
+              chosenFood = item;
+              break;
+            }
+          }
+        } else {
+          // Critical hunger, use best food available
+          chosenFood = foodItems[foodItems.length - 1];
         }
-      }
-    } else {
-      // Critical hunger, use best food available
-      chosenFood = foodItems[foodItems.length - 1];
-    }
-    
-    try {
+        
+        try {
       state.isEating = true;
       console.log(`[AUTO-EAT] Attempting to eat ${chosenFood.name} (+${getFoodValue(chosenFood.name)} food)`);
-      await bot.equip(chosenFood, 'hand');
-      await bot.consume();
+          await bot.equip(chosenFood, 'hand');
+          await bot.consume();
       console.log(`[AUTO-EAT] Successfully ate ${chosenFood.name}`);
-      // Don't spam chat with eating messages
-    } catch (e) {
+          // Don't spam chat with eating messages
+        } catch (e) {
       // Only log real errors, not "food is full" or "cancelled" messages
       if (!e.message.includes('Food is full') && !e.message.includes('cancelled')) {
         console.log('[AUTO-EAT] Failed to eat:', e.message);
-      }
+        }
     } finally {
       state.isEating = false;
     }
@@ -605,7 +605,7 @@ module.exports = function(bot, mcData, defaultMovements, goals, states) {
         bot.chat('Critical health! Retreating!');
         return;
       }
-      
+
       // If low health but hostiles are nearby, FIGHT BACK instead of fleeing
       // This prevents the bot from running away when being attacked
       if (hostiles.length === 0) return;
